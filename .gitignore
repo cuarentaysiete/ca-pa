@@ -1,0 +1,26 @@
+# Python / virtualenv
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+
+# Test / build artifacts
+.pytest_cache/
+build/
+dist/
+*.spec
+
+# Generated sample files (large; the test suite regenerates its own)
+tests/samples/
+samples/
+*.psd
+*.psb
+*.tif
+*.tiff
+!tests/**/*.py
+
+# OS cruft
+.DS_Store
+Thumbs.db
