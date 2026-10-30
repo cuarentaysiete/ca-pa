@@ -2,7 +2,7 @@
 
 # ca-pa
 
-**ca-pa** (*«capas»*) is a small macOS utility that opens big layered image
+**ca-pa** is a small macOS utility that opens big layered image
 files -- **layered TIFF** and **PSD/PSB** -- and shows their **layer
 structure** (the tree of folders, pixel layers, shapes, text and adjustment
 layers, with each layer's metadata) **without decoding a single pixel**.
