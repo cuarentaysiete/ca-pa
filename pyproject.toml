@@ -19,9 +19,13 @@ ca-pa = "ca_pa:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+app = ["pyinstaller>=6"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+ca_pa = ["resources/*.png", "resources/*.icns"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

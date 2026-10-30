@@ -83,6 +83,13 @@ size, bit depth, colour mode, layer count and any warnings.
 
 ## Status
 
-The parser and the PySide6 GUI are complete and tested.  The remaining piece
-is the PyInstaller `.app` bundle for distribution (see
-`docs/packaging.md`).
+The parser, the PySide6 GUI and the PyInstaller packaging are complete.
+Build the macOS `ca-pa.app` with:
+
+```bash
+.venv/bin/pip install -e ".[app]"
+.venv/bin/pyinstaller --clean --noconfirm ca-pa.spec   # -> dist/ca-pa.app
+```
+
+See [`docs/packaging.md`](docs/packaging.md) for the full instructions
+(icon, code signing, distribution).
