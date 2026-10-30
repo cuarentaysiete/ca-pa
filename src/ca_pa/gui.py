@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHeaderView,
@@ -35,6 +35,32 @@ SUPPORTED_EXTS = {".tif", ".tiff", ".psd", ".psb"}
 
 #: the tree's columns, in order.
 COLUMNS = ["Name", "Type", "Colour", "Opacity", "Blend", "Notes"]
+
+
+def _resource(name: str) -> str:
+    """Absolute path of a bundled resource (works from source and from a bundle)."""
+    import sys
+
+    base = os.path.dirname(os.path.abspath(__file__))
+    candidate = os.path.join(base, "resources", name)
+    if os.path.exists(candidate):
+        return candidate
+    # PyInstaller bundles resources next to the executable.
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+        candidate = os.path.join(meipass, "resources", name)
+        if os.path.exists(candidate):
+            return candidate
+    return candidate
+
+
+def app_icon() -> QIcon | None:
+    """The application window icon, or None if the resource is missing."""
+    path = _resource("ca-pa_icon.png")
+    if not os.path.exists(path):
+        return None
+    icon = QIcon(path)
+    return icon if not icon.isNull() else None
 
 
 def is_supported(path: str) -> bool:
@@ -139,6 +165,9 @@ class MainWindow(QMainWindow):
     def __init__(self, files: list[str] | None = None) -> None:
         super().__init__()
         self.setWindowTitle("ca-pa — layer structure")
+        icon = app_icon()
+        if icon is not None:
+            self.setWindowIcon(icon)
         self.resize(1040, 680)
         self._files: list[tuple[str, str]] = []  # (path, "loading"|"loaded"|"error")
         self._docs: dict[str, DocumentInfo] = {}
@@ -298,6 +327,9 @@ def run(files: list[str] | None = None) -> int:
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
+    icon = app_icon()
+    if icon is not None:
+        app.setWindowIcon(icon)
     window = MainWindow(files or [])
     window.show()
     return app.exec()

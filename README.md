@@ -1,3 +1,5 @@
+![ca-pa icon](docs/icon.png)
+
 # ca-pa
 
 **ca-pa** (*«capas»*) is a small macOS utility that opens big layered image
