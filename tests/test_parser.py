@@ -22,12 +22,6 @@ from tests import make_samples
 REAL_SAMPLES = os.environ.get("CA_PA_SAMPLES", "/workspace/ca-pa/samples")
 
 
-@pytest.fixture(scope="session")
-def samples(tmp_path_factory) -> dict:
-    out = tmp_path_factory.mktemp("samples")
-    return make_samples.generate_all(str(out))
-
-
 def _find(node_layers, name):
     for n in node_layers:
         if n.name == name:

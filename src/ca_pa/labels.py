@@ -65,9 +65,13 @@ ADJUSTMENT_NAMES: dict[bytes, str] = {
     b"phfl": "Photo Filter",
     b"selc": "Selective Color",
     b"thrs": "Threshold",
+    b"post": "Posterize",
     b"vibA": "Vibrance",
-    b"infx": "Invert",
+    b"nvrt": "Invert",
 }
+# Keys that merely *look* like adjustment blocks but are not -- notably
+# 'infx' is the blend-interior-elements block, present on many plain layers.
+NON_ADJUSTMENT_KEYS: frozenset[bytes] = frozenset({b"infx", b"clbl", b"knko"})
 
 
 #: Photoshop layer-effect class names (from 'lfx2') -> friendly labels.

@@ -64,8 +64,23 @@ them in a directory and point the suite at it:
 CA_PA_SAMPLES=/ruta/samples .venv/bin/python -m pytest
 ```
 
+## Using the app
+
+```bash
+ca-pa                      # open the window; drag & drop files onto it
+ca-pa a.tiff b.psd         # open the window with those files already loaded
+ca-pa --text a.tiff        # print the layer tree as text (for scripting)
+ca-pa --json a.tiff        # print the layer tree as JSON
+```
+
+The window has a file list on the left (one entry per dropped file, with its
+layer count and size) and the layer tree on the right, with columns for name,
+type, colour swatch, opacity, blend mode and a notes column (hidden, masks,
+effects).  Selecting a file shows its tree; the status bar shows the canvas
+size, bit depth, colour mode, layer count and any warnings.
+
 ## Status
 
-The parser layer is complete and tested (PSD, PSB, classic layered TIFF and
-the non-standard byte-swapped variant). The interactive GUI and the `.app`
-packaging are next.
+The parser and the PySide6 GUI are complete and tested.  The remaining piece
+is the PyInstaller `.app` bundle for distribution (see
+`docs/packaging.md`).

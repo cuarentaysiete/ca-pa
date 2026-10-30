@@ -254,10 +254,16 @@ def _map_api_layer(layer) -> LayerNode:
         kind, kind_label = "shape", "Shape"
     elif isinstance(layer, psd_layers.FillLayer):
         kind, kind_label = "fill", "Fill"
+    elif isinstance(layer, psd_layers.AdjustmentLayer):
+        kind, kind_label = "adjustment", "Adjustment"
+        for key, name in labels.ADJUSTMENT_NAMES.items():
+            if key in blocks:
+                kind_label = "Adjustment: " + name
+                break
     else:
         kind, kind_label = "pixel", "Pixel"
         for key, name in labels.ADJUSTMENT_NAMES.items():
-            if key in blocks:
+            if key in blocks and key not in labels.NON_ADJUSTMENT_KEYS:
                 kind, kind_label = "adjustment", "Adjustment: " + name
                 break
 
