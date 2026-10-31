@@ -47,6 +47,34 @@ shown as a single merged layer with a note, rather than failing.
 
 ## How it works
 
+```mermaid
+graph TD
+    A[Input File<br/>PSD, PSB, TIFF] --> B{Dispatcher<br/>ca_pa.parser}
+    
+    B -->|Magic Bytes: 8BPS| C[PSD / PSB Parser]
+    B -->|Magic Bytes: II* / MM*| D[TIFF Parser]
+    
+    C --> E[Read Metadata & Blocks<br/>Header, Resources, Layers]
+    C -.->|Seek Past| F[Heavy Pixel Data]
+    
+    D --> G{Layered TIFF Type}
+    G -->|Classic Photoshop| H[Read Tags:<br/>37724, 37725, 37726]
+    G -->|Byte-swapped| I[Read Tag 37724<br/>MIB8 Metadata Blocks]
+    
+    E --> J((Data Model))
+    H --> J
+    I --> J
+    
+    J --> K[GUI Window]
+    J --> L[CLI Output<br/>Text / JSON]
+    
+    classDef skip fill:#f9d0c4,stroke:#333,stroke-width:1px,stroke-dasharray: 5 5;
+    class F skip;
+```
+
+* **PSD / PSB** — the reader walks the file header, image resources and layer
+  records, and **seeks past** the channel image data...
+
 * **PSD / PSB** — the reader walks the file header, image resources and layer
   records, and **seeks past** the channel image data and the merged image. The
   per-layer tagged blocks (names, colours, masks, effects, section dividers)
@@ -67,6 +95,34 @@ shown as a single merged layer with a note, rather than failing.
 
 The data model is two plain dataclasses — `DocumentInfo` (canvas + layer tree)
 and `LayerNode` (one layer) — with `to_dict()`/`to_json()` for scripting.
+
+```mermaid
+classDiagram
+    class DocumentInfo {
+        +String format
+        +Tuple canvas_size
+        +Int bit_depth
+        +String colour_mode
+        +Int total_layer_count
+        +List warnings
+        +List~LayerNode~ layers
+        +to_dict() dict
+        +to_json() string
+    }
+    
+    class LayerNode {
+        +String name
+        +String type
+        +String colour
+        +Float opacity
+        +String blend_mode
+        +List notes
+        +List~LayerNode~ children
+    }
+    
+    DocumentInfo "1" *-- "many" LayerNode : contains
+    LayerNode "1" *-- "many" LayerNode : nested folders
+```
 
 ---
 
@@ -122,6 +178,46 @@ tree with every field above), which is handy for feeding other tools.
 | Flat TIFF / PSD | Detected; shown as one merged layer with a note. |
 
 ## Project layout
+
+```mermaid
+graph LR
+    subgraph Interfaces
+        CLI[CLI<br/>__main__.py]
+        GUI[PySide6 GUI<br/>gui.py]
+    end
+
+    subgraph Core Parsing Logic
+        DISP[Dispatcher<br/>parser.py]
+        PSD[PSD Reader<br/>psd_parser.py]
+        TIFF[TIFF Reader<br/>tiff_parser.py]
+    end
+
+    subgraph Data & Utilities
+        MOD[Data Model<br/>model.py]
+        LBL[Labels & Enums<br/>labels.py]
+        ERR[Exceptions<br/>errors.py]
+    end
+
+    CLI --> DISP
+    GUI --> DISP
+    
+    DISP --> PSD
+    DISP --> TIFF
+    DISP -.-> ERR
+    
+    PSD --> MOD
+    TIFF --> MOD
+    
+    PSD -.-> LBL
+    TIFF -.-> LBL
+```
+
+```
+src/ca_pa/
+    __main__.py     CLI + GUI entry point (python -m ca_pa)
+    run_app.py      single frozen entry point for the PyInstaller bundle
+...
+```
 
 ```
 src/ca_pa/
