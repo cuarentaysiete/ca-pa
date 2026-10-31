@@ -1,0 +1,73 @@
+# Build and release the ca-pa macOS app.
+#
+#   * every push to a version tag (v*)  -> run tests, build ca-pa.app, release the zip
+#   * "Run workflow" (manual)           -> same, artifacts downloadable from the run
+#
+# The build must happen on macOS because PyInstaller is not cross-platform:
+# a Linux runner cannot produce a .app bundle.
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to attach the release to"
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: write   # let the release step create a GitHub Release
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: python -m venv .venv && .venv/bin/pip install -e ".[dev,app]"
+      - name: Test suite
+        run: .venv/bin/python -m pytest -q
+
+  build:
+    runs-on: macos-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: python -m venv .venv && .venv/bin/pip install -e ".[app]"
+      - name: Full-resolution icon (sips + iconutil)
+        run: scripts/make_icon.sh
+      - name: Build .app with PyInstaller
+        run: .venv/bin/pyinstaller --clean --noconfirm ca-pa.spec
+      - name: Package
+        run: |
+          cd dist
+          zip -qr ca-pa-macos.zip ca-pa.app
+          ls -lh ca-pa-macos.zip
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ca-pa-macos
+          path: dist/ca-pa-macos.zip
+
+      # Create a GitHub Release only for real tag pushes.
+      - name: Create release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ca-pa ${{ github.ref_name }}
+          files: dist/ca-pa-macos.zip
+          body: |
+            ca-pa — inspect the layer structure of big layered TIFF/PSD files
+            without decoding the pixels.
+
+            Unzip and drag your layered files onto the window.
