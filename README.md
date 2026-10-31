@@ -125,8 +125,14 @@ classDiagram
 
 ## Getting the app
 
-The easiest way is a prebuilt bundle from the [releases](https://github.com/cuarentaysiete/ca-pa/releases):
-download `ca-pa-macos.zip`, unzip it, and you have `ca-pa.app`.
+The easiest way is a prebuilt bundle from the
+[releases](https://github.com/cuarentaysiete/ca-pa/releases) page — pick the
+zip for your chip, unzip it, and you have `ca-pa.app`:
+
+| Your Mac has… | Download |
+|---|---|
+| Apple Silicon (M1/M2/M3/M4, 2020+) | `ca-pa-macos-arm64.zip` |
+| Intel | `ca-pa-macos-intel.zip` |
 
 <details>
 <summary><b>Building from source</b> (macOS only)</summary>
@@ -257,11 +263,14 @@ CA_PA_SAMPLES=/ruta/samples .venv/bin/python -m pytest
 
 ## Packaging & CI
 
-A GitHub Actions workflow (`.github/workflows/build.yml`) runs on `macos-latest`:
-it runs the test suite, builds `ca-pa.app` with PyInstaller (full-resolution
-icon via `sips`/`iconutil`), and zips it as a release artifact. Pushing a
-`v*` tag also publishes a GitHub Release. Manual runs are available from the
-*Actions* tab.
+A GitHub Actions workflow (`.github/workflows/build.yml`) runs the test
+suite once, then **builds `ca-pa.app` with PyInstaller twice** — once on an
+Apple Silicon runner (`macos-latest`, arm64) and once on an Intel runner
+(`macos-13`, x86_64) — because PyInstaller is not cross-platform and each
+architecture must be compiled natively.  Pushing a `v*` tag then publishes a
+single GitHub Release containing both zips
+(`ca-pa-macos-arm64.zip` and `ca-pa-macos-intel.zip`).  Manual runs are
+available from the *Actions* tab and keep their builds as run artifacts.
 
 ## License
 

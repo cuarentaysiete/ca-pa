@@ -42,6 +42,22 @@ build/                # intermediates (safe to delete)
 Double-click `dist/ca-pa.app` to run it, or drag layered TIFF/PSD/PSB files
 onto the window.
 
+## CI builds (both architectures)
+
+`.github/workflows/build.yml` mirrors the local build in GitHub Actions:
+the test suite runs once on `macos-latest`, and the `build` job then runs
+as a **matrix over two runners** so every CPU gets a native binary:
+
+| runner | architecture | artifact / release asset |
+|---|---|---|
+| `macos-latest` | Apple Silicon (arm64) | `ca-pa-macos-arm64.zip` |
+| `macos-13` | Intel (x86_64) | `ca-pa-macos-intel.zip` |
+
+A final `release` job collects both zips and, on a `v*` tag push, publishes
+them together in one GitHub Release (manual runs keep them as run
+artifacts instead).  PyInstaller cannot produce a universal2 `.app` on its
+own, so two native builds are the reliable way to cover both families.
+
 ## Code signing (optional)
 
 An unsigned app triggers Gatekeeper's warning on first launch.  To sign it:

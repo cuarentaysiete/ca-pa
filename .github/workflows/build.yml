@@ -1,10 +1,15 @@
 # Build and release the ca-pa macOS app.
 #
-#   * every push to a version tag (v*)  -> run tests, build ca-pa.app, release the zip
-#   * "Run workflow" (manual)           -> same, artifacts downloadable from the run
+#   * every push to a version tag (v*)  -> tests, build for BOTH architectures,
+#                                          one GitHub Release with two zips:
+#                                            ca-pa-macos-arm64.zip  (Apple Silicon)
+#                                            ca-pa-macos-intel.zip (Intel)
+#   * "Run workflow" (manual)           -> same builds, artifacts only
 #
 # The build must happen on macOS because PyInstaller is not cross-platform:
-# a Linux runner cannot produce a .app bundle.
+# a Linux runner cannot produce a .app bundle.  Each architecture is built
+# on its native runner so the bundled interpreter and Qt/PySide6 binaries
+# match the CPU that will run them.
 name: build
 
 on:
@@ -34,8 +39,12 @@ jobs:
         run: .venv/bin/python -m pytest -q
 
   build:
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
     needs: test
+    strategy:
+      fail-fast: false          # let the other arch finish even if one fails
+      matrix:
+        os: [macos-latest, macos-13]   # Apple Silicon (arm64) + Intel (x86_64)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -43,6 +52,14 @@ jobs:
           python-version: "3.11"
       - name: Install
         run: python -m venv .venv && .venv/bin/pip install -e ".[app]"
+      - name: Architecture label
+        id: meta
+        run: |
+          if [[ "${{ runner.arch }}" == "ARM64" ]]; then
+            echo "arch=arm64" >> "$GITHUB_OUTPUT"
+          else
+            echo "arch=intel" >> "$GITHUB_OUTPUT"
+          fi
       - name: Full-resolution icon (sips + iconutil)
         run: scripts/make_icon.sh
       - name: Build .app with PyInstaller
@@ -50,24 +67,49 @@ jobs:
       - name: Package
         run: |
           cd dist
-          zip -qr ca-pa-macos.zip ca-pa.app
-          ls -lh ca-pa-macos.zip
+          zip -qr "ca-pa-macos-${{ steps.meta.outputs.arch }}.zip" ca-pa.app
+          ls -lh "ca-pa-macos-${{ steps.meta.outputs.arch }}.zip"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ca-pa-macos
-          path: dist/ca-pa-macos.zip
+          name: ca-pa-macos-${{ steps.meta.outputs.arch }}
+          path: dist/ca-pa-macos-${{ steps.meta.outputs.arch }}.zip
 
-      # Create a GitHub Release only for real tag pushes.
+  release:
+    runs-on: macos-latest
+    needs: build
+    steps:
+      - name: Download arm64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: ca-pa-macos-arm64
+          path: dist/arm64
+      - name: Download Intel build
+        uses: actions/download-artifact@v4
+        with:
+          name: ca-pa-macos-intel
+          path: dist/intel
+
+      # Publish a GitHub Release only for real tag pushes; manual runs keep
+      # their artifacts in the run page instead.
       - name: Create release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ca-pa ${{ github.ref_name }}
-          files: dist/ca-pa-macos.zip
+          files: |
+            dist/arm64/ca-pa-macos-arm64.zip
+            dist/intel/ca-pa-macos-intel.zip
           body: |
             ca-pa — inspect the layer structure of big layered TIFF/PSD files
             without decoding the pixels.
+
+            **Which file do I download?**
+
+            | Chip | File |
+            |---|---|
+            | Apple Silicon (M1/M2/M3/M4…) | `ca-pa-macos-arm64.zip` |
+            | Intel (2020 or earlier) | `ca-pa-macos-intel.zip` |
 
             Unzip and drag your layered files onto the window.
