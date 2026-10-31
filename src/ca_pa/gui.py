@@ -19,7 +19,9 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QTreeWidget,
     QTreeWidgetItem,
@@ -193,6 +195,19 @@ class MainWindow(QMainWindow):
 
         self.setAcceptDrops(True)
 
+        self._stack = QStackedWidget()
+        self._empty.setStyleSheet("color: #888; font-size: 14px;")
+        self._stack.addWidget(self._empty)  # page 0: no file
+        self._stack.addWidget(self.tree)  # page 1: the layer tree
+
+        splitter = QSplitter()
+        splitter.addWidget(self.sidebar)
+        splitter.addWidget(self._stack)
+        splitter.setSizes([280, 680])
+        self.sidebar.setMinimumWidth(180)
+        self.setCentralWidget(splitter)
+        self._stack.setCurrentIndex(0)
+
         for path in files or []:
             self.add_file(path)
         self._show_current()
@@ -259,14 +274,17 @@ class MainWindow(QMainWindow):
         if path and path in self._docs:
             doc = self._docs[path]
             populate_tree(self.tree, doc)
+            self._stack.setCurrentWidget(self.tree)
             self._status.showMessage(_status_line(doc))
             return
         self.tree.clear()
+        self._stack.setCurrentWidget(self.tree)
         if path and path in self._errors:
             self._status.showMessage(
                 "Could not read %s: %s" % (os.path.basename(path), self._errors[path])
             )
         else:
+            self._stack.setCurrentWidget(self._empty)
             self._status.showMessage("No file open — drop a layered image to begin")
 
     # -- drag & drop ---------------------------------------------------------
