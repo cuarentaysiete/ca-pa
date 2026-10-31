@@ -38,15 +38,20 @@ BLEND_MODE_NAMES: dict[bytes, str] = {
 }
 
 #: Photoshop colour labels ('lclr' sheet colour / layer swatch).
+#: Photoshop layer "sheet" colours (the ``lclr`` / ``rlcl`` block, a 0-11 code
+#: matching psd-tools' ``SheetColorType``).  0 is "no colour".
 SHEET_COLORS: dict[int, str] = {
     1: "#ff0000",  # Red
     2: "#ff8000",  # Orange
     3: "#ffff00",  # Yellow
     4: "#008000",  # Green
-    5: "#ff0080",  # Pink
-    6: "#800080",  # Purple
-    7: "#000080",  # Blue
-    8: "#808080",  # Gray
+    5: "#0000ff",  # Blue
+    6: "#800080",  # Violet
+    7: "#808080",  # Gray
+    8: "#008080",  # Seafoam
+    9: "#000080",  # Indigo
+    10: "#ff0080",  # Magenta
+    11: "#ff00ff",  # Fuchsia
 }
 
 #: Photoshop adjustment tag -> label.

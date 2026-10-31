@@ -192,12 +192,31 @@ def _color(record, blocks) -> str | None:
         hexcolor = labels.rgba_to_hex(raw[:4])
         if hexcolor:
             return hexcolor
-    raw = _raw_block(blocks, b"lclr")
-    if raw is not None and len(raw) >= 4:
-        code = struct.unpack(">I", raw[:4])[0]
-        if code:
-            return labels.SHEET_COLORS.get(code)
+    code = _sheet_color_code(blocks)
+    if code:
+        return labels.SHEET_COLORS.get(code)
     return None
+
+
+def _sheet_color_code(blocks) -> int:
+    """The ``lclr`` sheet-colour code (0-11), whether psd-tools parsed it into
+    a ``SheetColorType`` enum or left it as raw bytes."""
+    block = blocks.get(b"lclr")
+    if block is None:
+        try:
+            block = blocks.get(Tag.SHEET_COLOR_SETTING)
+        except Exception:
+            block = None
+    if block is None:
+        return 0
+    data = getattr(block, "data", block)
+    value = getattr(data, "value", data)  # SheetColorType enum -> int
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        if isinstance(data, (bytes, bytearray)) and len(data) >= 4:
+            return struct.unpack(">I", data[:4])[0]
+    return 0
 
 
 def _effects(layer) -> list[str]:

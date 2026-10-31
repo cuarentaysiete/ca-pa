@@ -11,6 +11,7 @@ venv/
 build/
 dist/
 *.spec
+!ca-pa.spec
 
 # Generated sample files (large; the test suite regenerates its own)
 tests/samples/
