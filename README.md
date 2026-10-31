@@ -68,7 +68,7 @@ graph TD
     J --> K[GUI Window]
     J --> L[CLI Output<br/>Text / JSON]
     
-    classDef skip fill:#19a0c4,stroke:#333,stroke-width:1px,stroke-dasharray: 5 5;
+    classDef skip fill:#19a0c4,stroke:#fc0,stroke-width:3px,stroke-dasharray: 5 5;
     class F skip;
 ```
 
