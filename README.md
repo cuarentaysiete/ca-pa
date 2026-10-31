@@ -1,16 +1,15 @@
 <p align="center"><img src="docs/icon.png" width="128" alt="ca-pa icon"></p>
 
-<h1 align="center">ca-pa</h1>
+<h1 align="center"><i>ca-pa</i></h1>
 
-<p align="center"><img src="docs/screenshot.png" alt="ca-pa inspecting a 26-layer PSD" width="760"></p>
-
-**ca-pa** is a small macOS utility that opens big layered image files —
-**layered TIFF**, **PSD** and **PSB** — and shows their **layer structure**:
+_**ca-pa**_ is a layer inspector, a small macOS utility that opens big layered image files,
+**layered TIFF**, **PSD** and **PSB**, and shows the **layer structure**:
 the tree of folders, pixel layers, shapes, text, smart objects and adjustment
 layers, with each layer's metadata. It does this **without decoding a single
 pixel**, so a multi-hundred-MB file with 30+ layers opens in a couple of
 seconds and uses a few tens of megabytes of RAM.
 
+<p align="center"><img src="docs/screenshot.png" alt="ca-pa inspecting a 26-layer PSD" width="760"></p>
 The name is a nod to *capas* (Spanish for “layers”).
 
 ---
