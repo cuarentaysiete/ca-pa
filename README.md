@@ -73,9 +73,6 @@ graph TD
 ```
 
 * **PSD / PSB** — the reader walks the file header, image resources and layer
-  records, and **seeks past** the channel image data...
-
-* **PSD / PSB** — the reader walks the file header, image resources and layer
   records, and **seeks past** the channel image data and the merged image. The
   per-layer tagged blocks (names, colours, masks, effects, section dividers)
   are small, so only those are read.
@@ -86,7 +83,7 @@ graph TD
   copy of the PSD layer section* inside TIFF tag `37724` (a sequence of
   `MIB8` blocks) and omit the `37725`/`37726` tags entirely. ca-pa detects that
   shape and reads the small metadata blocks (names, dividers, colours, opacity,
-  type) while skipping the large image-data blocks, so even a 140 MB file costs
+  type) while skipping the large image-data blocks, so even a +1 GB file costs
   a few megabytes.
 * **Dispatch** — `ca_pa.parser.parse_file()` picks the reader by extension and,
   more reliably, by magic bytes (`8BPS` for PSD/PSB, `II*\0`/`MM\0*` for
