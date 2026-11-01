@@ -75,7 +75,7 @@ def test_psd_folder_children(samples):
 def test_psd_colour_effects_adjustment_shape(samples):
     d = parse_file(samples["sample.psd"])
     fancy = _find(d.layers, "Fancy")
-    assert fancy.color == "#ff0000"
+    assert fancy.color == "#e78679"
     assert set(fancy.effects) == {"Drop shadow", "Outer glow"}
     shape = _find(d.layers, "Shape with vector mask")
     assert shape.kind == "shape"
@@ -205,3 +205,77 @@ def test_document_model_helpers(samples):
     assert isinstance(d, DocumentInfo)
     flat = parse_file(samples["flat.psd"])
     assert len(flat.layers) == 1 and flat.layers[0].kind == "pixel"
+
+
+# --------------------------------------------------------------------------
+# TIFF vs PSD reference parity (the MIB8 block must reproduce the PSD tree).
+
+
+def _flat(nodes, depth=0):
+    out = []
+    for n in nodes:
+        out.append((depth, n.name, n.kind, n.color, int(n.visible), n.opacity, n.blend_mode))
+        out.extend(_flat(n.children, depth + 1))
+    return out
+
+
+@pytest.mark.skipif(not os.path.isdir(REAL_SAMPLES), reason="reference samples not present")
+def test_real_tiff_matches_psd_reference():
+    psd = _flat(parse_file(os.path.join(REAL_SAMPLES, "layered_PSD.psd")).layers)
+    for tif in ("layered_TIFF-compression.tif", "layered_TIFF-no_compression.tif"):
+        tiff = _flat(parse_file(os.path.join(REAL_SAMPLES, tif)).layers)
+        assert len(psd) == len(tiff), tif
+        # Names and nesting (the hierarchy) must match exactly.
+        assert [x[:2] for x in psd] == [x[:2] for x in tiff], tif
+        # Colours (sheet colour + folder inheritance) must match exactly.
+        assert [x[3] for x in psd] == [x[3] for x in tiff], tif
+        # The exporter drops a few markers; everything else must match.
+        losses = {
+            "EYE HELP": {"visible"},          # hidden-group flag lost
+            "Hue/Saturation 3": {"blend"},    # 'sat ' key not embedded
+            "color grading 1": {"kind"},      # adjustment marker dropped
+            "CC": {"opacity", "blend"},       # 204/Color stored nowhere findable
+            "darken": {"kind"},               # adjustment marker dropped
+            "lighten": {"opacity"},           # 128 stored nowhere findable
+        }
+        fields = {2: "kind", 4: "visible", 5: "opacity", 6: "blend"}
+        for ref, got in zip(psd, tiff):
+            allow = losses.get(ref[1], set())
+            for idx, fname in fields.items():
+                if fname in allow:
+                    continue
+                assert ref[idx] == got[idx], (tif, ref[1], fname, ref[idx], got[idx])
+
+
+def test_color_inheritance():
+    from ca_pa.model import LayerNode
+    from ca_pa.parser import _inherit_colors
+
+    folder = LayerNode(name="F", kind="group", kind_label="Folder", color="#eab267")
+    child = LayerNode(name="c1", color=None)
+    grandchild = LayerNode(name="c2", color="#e78679")  # explicit must win
+    child.children.append(grandchild)
+    folder.children.append(child)
+    outsider = LayerNode(name="solo", color=None)
+    _inherit_colors([folder, outsider])
+    assert child.color == "#eab267"          # inherited from the folder
+    assert grandchild.color == "#e78679"     # explicit kept
+    assert outsider.color is None            # nothing above to inherit
+
+
+def test_sheet_palette_is_the_sampled_one():
+    from ca_pa.labels import SHEET_COLORS
+
+    assert SHEET_COLORS == {
+        1: "#e78679",   # Red
+        2: "#eab267",   # Orange
+        3: "#e4dd74",   # Yellow
+        4: "#b4de8e",   # Green
+        5: "#a1c4f6",   # Blue
+        6: "#a499dd",   # Violet
+        7: "#b3b3b3",   # Gray
+        8: "#5b9ba1",   # Seafoam
+        9: "#6d76e9",   # Indigo
+        10: "#c35196",  # Magenta
+        11: "#af53cc",  # Fuchsia
+    }

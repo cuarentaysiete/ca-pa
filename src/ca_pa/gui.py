@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QObject, Qt, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -103,22 +103,38 @@ def _notes(layer: LayerNode) -> str:
     return "  ".join(notes)
 
 
-class ParseWorker(QThread):
-    """Parse one file off the main thread; emit (doc, error) when done."""
+class _ParseResult(QObject):
+    """Carries the (doc, error) signal back to the main thread.
+
+    PySide6 only allows Python-declared signals on QObject subclasses, and
+    QRunnable is not exposed as one, so the signal lives on a small companion
+    object that the window keeps alive.
+    """
 
     done = Signal(object, str)  # (DocumentInfo | None, error string)
 
-    def __init__(self, path: str, parent=None) -> None:
-        super().__init__(parent)
+
+class ParseTask(QRunnable):
+    """Parse one file off the main thread, pooled in a :class:`QThreadPool`.
+
+    A :class:`QThread` subclass destroyed while still running aborts the app
+    ("QThread: Destroyed while thread is still running"); a pooled runnable
+    can be waited on cleanly via ``QThreadPool.waitForDone()`` instead.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
         self.path = path
+        self.setAutoDelete(True)
+        self.result = _ParseResult()
 
     def run(self) -> None:
         try:
-            self.done.emit(parse_file(self.path), "")
+            self.result.done.emit(parse_file(self.path), "")
         except ParseError as exc:
-            self.done.emit(None, str(exc))
+            self.result.done.emit(None, str(exc))
         except Exception as exc:  # pragma: no cover - defensive
-            self.done.emit(None, "%s: %s" % (type(exc).__name__, exc))
+            self.result.done.emit(None, "%s: %s" % (type(exc).__name__, exc))
 
 
 def _make_item(layer: LayerNode) -> QTreeWidgetItem:
@@ -174,7 +190,10 @@ class MainWindow(QMainWindow):
         self._files: list[tuple[str, str]] = []  # (path, "loading"|"loaded"|"error")
         self._docs: dict[str, DocumentInfo] = {}
         self._errors: dict[str, str] = {}
-        self._workers: list[ParseWorker] = []
+        self._pool = QThreadPool(self)
+        self._pool.setMaxThreadCount(min(4, os.cpu_count() or 2))
+        self._tasks: list[ParseTask] = []
+        self._results: list[_ParseResult] = []  # kept alive for queued signals
 
         self.sidebar = QListWidget()
         self.sidebar.setDragDropMode(QAbstractItemView.NoDragDrop)
@@ -218,17 +237,25 @@ class MainWindow(QMainWindow):
         path = os.path.abspath(path)
         if not is_supported(path) or any(p == path for p, _ in self._files):
             return
-        worker = ParseWorker(path, self)
-        worker.done.connect(lambda doc, err: self._on_worker_done(worker, doc, err))
-        worker.start()
-        self._workers.append(worker)
+        task = ParseTask(path)
+        task.result.done.connect(
+            lambda doc, err, p=path, t=task: self._on_parse_done(p, doc, err, t)
+        )
+        self._tasks.append(task)
+        self._results.append(task.result)
+        self._pool.start(task)
         self._files.append((path, "loading"))
         self._refresh_sidebar()
         if len(self._files) == 1:
             self.sidebar.setCurrentRow(0)
 
-    def _on_worker_done(self, worker: ParseWorker, doc: DocumentInfo | None, error: str) -> None:
-        path = worker.path
+    def _on_parse_done(
+        self,
+        path: str,
+        doc: DocumentInfo | None,
+        error: str,
+        task: ParseTask,
+    ) -> None:
         for i, (p, _state) in enumerate(self._files):
             if p == path:
                 self._files[i] = (path, "loaded" if doc is not None else "error")
@@ -236,7 +263,8 @@ class MainWindow(QMainWindow):
             self._docs[path] = doc
         else:
             self._errors[path] = error
-        self._workers = [w for w in self._workers if w.isRunning()]
+        if task in self._tasks:
+            self._tasks.remove(task)
         self._refresh_sidebar()
         current = self.sidebar.currentItem()
         current_path = current.data(Qt.ItemDataRole.UserRole) if current else None
@@ -245,6 +273,16 @@ class MainWindow(QMainWindow):
         elif current_path is None and self._files:
             self.sidebar.setCurrentRow(0)
             self._show_current()
+
+    def closeEvent(self, event) -> None:
+        """Close the window: drop queued parses, let running ones finish.
+
+        Waiting here (instead of killing threads at shutdown) is what fixes
+        the "QThread: Destroyed while thread is still running" abort.
+        """
+        self._pool.clear()
+        self._pool.waitForDone()
+        event.accept()
 
     # -- sidebar -------------------------------------------------------------
 

@@ -78,3 +78,24 @@ def test_window_shows_error(qapp):
     assert window.tree.topLevelItemCount() == 0
     assert "Could not read" in window.statusBar().currentMessage()
     window.close()
+
+
+def test_close_while_parsing_is_safe(qapp, samples):
+    """Closing the window mid-parse must not abort (no live QThread)."""
+    import time
+
+    window = MainWindow()
+    path = os.path.abspath(samples["sample.psd"])
+    window.add_file(path)
+    window.close()  # closeEvent must wait for the pool, never kill a thread
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        qapp.processEvents()
+        states = [s for p, s in window._files if p == path]
+        if states and states[0] != "loading":
+            break
+        time.sleep(0.01)
+    assert window._pool.activeThreadCount() == 0
+    assert any(s == "loaded" for _, s in window._files if True)
+    window.deleteLater()
+    qapp.processEvents()

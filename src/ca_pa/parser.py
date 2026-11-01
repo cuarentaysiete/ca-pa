@@ -44,5 +44,23 @@ def parse_file(path: str | os.PathLike) -> DocumentInfo:
         raise ParseError("%s: file not found" % path)
     fmt = sniff(path)
     if fmt == "psd":
-        return parse_psd(path)
-    return parse_tiff(path)
+        doc = parse_psd(path)
+    else:
+        doc = parse_tiff(path)
+    _inherit_colors(doc.layers)
+    return doc
+
+
+def _inherit_colors(nodes) -> None:
+    """Give layers without their own colour the nearest ancestor folder's.
+
+    Runs on every parsed document (PSD and TIFF alike), so an explicit
+    layer colour always wins and colourless children follow their folder.
+    """
+    def walk(children, inherited):
+        for node in children:
+            if node.color is None:
+                node.color = inherited
+            walk(node.children, node.color)
+
+    walk(nodes, None)

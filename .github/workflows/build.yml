@@ -7,9 +7,12 @@
 #   * "Run workflow" (manual)           -> same builds, artifacts only
 #
 # The build must happen on macOS because PyInstaller is not cross-platform:
-# a Linux runner cannot produce a .app bundle.  Each architecture is built
-# on its native runner so the bundled interpreter and Qt/PySide6 binaries
-# match the CPU that will run them.
+# a Linux runner cannot produce a .app bundle.  Both architectures are built
+# on the (plentiful) Apple Silicon runner: arm64 natively, x86_64 through
+# Rosetta 2 (`actions/setup-python` with `architecture: x86_64` installs an
+# x86_64 interpreter, and PyInstaller bundles exactly what it is running, so
+# the resulting .app is a genuine Intel build).  This avoids the scarce
+# `macos-13` Intel runners, which can sit queued for days.
 name: build
 
 on:
@@ -39,31 +42,38 @@ jobs:
         run: .venv/bin/python -m pytest -q
 
   build:
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest   # Apple Silicon box; Intel leg runs under Rosetta
     needs: test
     strategy:
       fail-fast: false          # let the other arch finish even if one fails
       matrix:
-        os: [macos-latest, macos-13]   # Apple Silicon (arm64) + Intel (x86_64)
+        arch: [arm64, x86_64]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          architecture: ${{ matrix.arch }}   # x86_64 => Rosetta 2
+      - name: Architecture check
+        run: |
+          echo "python says: $(python -c 'import platform; print(platform.machine())')"
+          file "$(command -v python)"
       - name: Install
         run: python -m venv .venv && .venv/bin/pip install -e ".[app]"
       - name: Architecture label
         id: meta
         run: |
-          if [[ "${{ runner.arch }}" == "ARM64" ]]; then
-            echo "arch=arm64" >> "$GITHUB_OUTPUT"
-          else
+          if [[ "${{ matrix.arch }}" == "x86_64" ]]; then
             echo "arch=intel" >> "$GITHUB_OUTPUT"
+          else
+            echo "arch=arm64" >> "$GITHUB_OUTPUT"
           fi
       - name: Full-resolution icon (sips + iconutil)
         run: scripts/make_icon.sh
       - name: Build .app with PyInstaller
         run: .venv/bin/pyinstaller --clean --noconfirm ca-pa.spec
+      - name: Verify bundle architecture
+        run: file dist/ca-pa.app/Contents/MacOS/ca-pa
       - name: Package
         run: |
           cd dist

@@ -337,120 +337,126 @@ def _looks_like_embedded(blob: bytes) -> bool:
     return head == _EMBED_MARKER
 
 
-def _mib8_findall(blob: bytes, key: bytes, start: int = 0) -> list[int]:
-    """Offsets of every ``8BIM``+``key`` block in ``blob`` (little-endian)."""
-    out: list[int] = []
-    sig = _MIB8 + key
-    i = start
-    while True:
-        j = blob.find(sig, i)
-        if j < 0:
-            return out
-        out.append(j)
+def _mib8_index(blob: bytes) -> list[tuple[int, bytes, int]]:
+    """``(offset, key, length)`` of every ``MIB8`` block, in file order."""
+    out: list[tuple[int, bytes, int]] = []
+    i, n = 0, len(blob)
+    while i + 8 <= n:
+        j = blob.find(_MIB8, i)
+        if j < 0 or j + 12 > n:
+            break
+        key = blob[j + 4 : j + 8].rstrip(b"\x00")
+        ln = struct.unpack_from("<I", blob, j + 8)[0]
+        out.append((j, key, max(0, min(ln, n - j - 12))))
         i = j + 8
+    return out
 
 
-def _mib8_value(blob: bytes, pos: int, cap: int = 8192) -> bytes:
-    """Payload of the block at ``pos``; its length field is little-endian."""
-    if pos + 12 > len(blob):
-        return b""
-    ln = struct.unpack_from("<I", blob, pos + 8)[0]
-    ln = max(0, min(ln, cap, len(blob) - pos - 12))
-    return blob[pos + 12 : pos + 12 + ln]
+def _blend_key_in(data: bytes) -> bytes | None:
+    """First Photoshop blend-mode key (4 ASCII chars) embedded in ``data``."""
+    for key in labels.BLEND_MODE_NAMES:
+        if len(key) == 4 and key in data:
+            return key
+    return None
 
 
-def _mib8_first(blob: bytes, key: bytes, lo: int, hi: int) -> bytes | None:
-    j = blob.find(_MIB8 + key, lo, hi)
-    if j < 0:
-        return None
-    return _mib8_value(blob, j)
+def _embedded_node(rec: dict[str, Any], width: int, height: int) -> LayerNode:
+    """Map one decoded ``inul`` record onto a :class:`LayerNode`."""
+    meta = rec["meta"]
+    color = None
+    cl = meta.get(b"rlcl")
+    if cl and len(cl) >= 4:
+        color = labels.SHEET_COLORS.get(struct.unpack_from("<I", cl)[0])
+    opacity = 255
+    op = meta.get(b"rloc")
+    if op and len(op) >= 4:
+        opacity = max(0, min(255, struct.unpack_from("<I", op)[0]))
+
+    ty = meta.get(b"rsnl")
+    vu = meta.get(b"vruc")
+    visible = True
+    kind, klabel = "pixel", "Pixel"
+    if ty == b"ryal":  # smart object
+        kind, klabel = "smartobject", "Smart Object"
+    elif vu is not None or ty == b"tnoc":
+        kind, klabel = "adjustment", "Adjustment"
+        if ty == b"tnoc":  # this writer marks (hidden) adjustments with it
+            visible = False
+    return LayerNode(
+        name=rec["name"],
+        kind=kind,
+        kind_label=klabel,
+        color=color,
+        opacity=opacity,
+        blend_mode=labels.blend_mode_name(_blend_key_in(vu) if vu else None),
+        visible=visible,
+        bounds=(0, 0, width, height),
+    )
 
 
 def _parse_embedded_layers(blob: bytes, width: int, height: int) -> list[LayerNode]:
-    """Parse the non-standard "Adobe Photoshop Document Data Block".
+    """Decode the non-standard byte-swapped layer section stored in tag 37724.
 
-    Certain writers stash a whole byte-swapped (little-endian) copy of the
-    PSD layer section inside TIFF tag 37724 instead of the compact
-    37724/37725/37726 triple.  The block is a sequence of ``MIB8`` blocks;
-    we read only the small metadata blocks (names, section dividers, colour,
-    opacity, type) and skip the large image-data blocks, so even a 2 GB file
-    costs a few megabytes.
+    Certain writers embed a whole little-endian copy of the Photoshop layer
+    section instead of the classic 37724/37725/37726 triple.  Each layer is
+    an ``inul`` record (UTF-16LE name) followed by small sibling blocks whose
+    keys are byte-reversed spellings of PSD tagged-block keys:
+
+      rlcl  u32 sheet-colour code            (PSD lclr)
+      rloc  u32 opacity 0-255                (PSD colr)
+      rsnl  4-char kind hint: 'ryal' smart object, 'bgnd' background,
+            'tnoc' hidden adjustment, 'test' divider noise
+      vruc  adjustment (curves) data; may embed the 4-char blend key (PSD curv)
+      tcsl  u32 section-divider state: 1/2 = folder start (2 = collapsed),
+            3 = '</Layer group>' end divider
+      mron  layer image data - skipped, never decoded
+      (diyl lblc xfni oknk fpsl dmhs tsuc prxf cles tirb ssap rvyl: unused)
+
+    Records are stored bottom-up, so the tree is rebuilt by scanning them in
+    reverse with a stack: a folder-start record pushes a new folder and its
+    end divider pops it.  Only small (<= 4 KB) blocks are ever read.
     """
-    inuls = _mib8_findall(blob, b"inul")
+    idx = _mib8_index(blob)
+    inuls = [j for j, key, _ in idx if key == b"inul"]
     if not inuls:
         return []
-    tcsls = _mib8_findall(blob, b"tcsl")
-    full = (0, 0, width, height)
 
-    def meta(lo: int, hi: int) -> dict[str, Any]:
-        color = None
-        cv = _mib8_first(blob, b"rlcl", lo, hi)
-        if cv:
-            color = labels.SHEET_COLORS.get(cv[0])
-        ov = _mib8_first(blob, b"rvyl", lo, hi)
-        opacity = ov[0] if ov else 255
-        opacity = max(0, min(255, opacity))
-        return {"color": color, "opacity": opacity, "type": _mib8_first(blob, b"rsnl", lo, hi)}
-
-    entries: list[tuple[str, int, dict[str, Any]]] = []
+    n = len(blob)
+    recs: list[dict[str, Any]] = []
     for k, p in enumerate(inuls):
-        hi = inuls[k + 1] if k + 1 < len(inuls) else len(blob)
+        q = inuls[k + 1] if k + 1 < len(inuls) else n
         ln = struct.unpack_from("<I", blob, p + 8)[0]
         nch = struct.unpack_from("<I", blob, p + 12)[0] if ln >= 4 else 0
+        nch = max(0, min(nch, (q - 16 - p) // 2))
         name = blob[p + 16 : p + 16 + nch * 2].decode("utf-16-le", "replace").rstrip("\x00")
-        divider = 0
-        for t in tcsls:
-            if p <= t < hi:
-                divider = blob[t + 12]  # 0 bbox, 1 open, 2 closed, 3 placeholder
-                break
-        entries.append((name, divider, meta(p, hi)))
-
-    def kind_for(ty: bytes | None) -> tuple[str, str]:
-        if ty == b"tnoc":
-            return "adjustment", "Adjustment"
-        return "pixel", "Pixel"
+        meta = {
+            key: blob[pos + 12 : pos + 12 + blen]
+            for pos, key, blen in idx
+            if p < pos < q and blen <= 4096
+        }
+        div = None
+        tc = meta.get(b"tcsl")
+        if tc and len(tc) >= 4:
+            div = struct.unpack_from("<I", tc)[0]
+        recs.append({"name": name, "div": div, "meta": meta})
 
     root = LayerNode(name="<document>", kind="group", kind_label="")
     stack: list[LayerNode] = [root]
-    for name, divider, m in entries:
-        if divider == 3:  # an "open folder" placeholder (</Layer group>)
-            stack.append(LayerNode(name=name, kind="group", kind_label="Folder", bounds=full))
-        elif divider in (1, 2):  # the folder's real record: name + colour/opacity
-            node = stack.pop() if len(stack) > 1 else LayerNode(name=name)
-            target = stack[-1]
-            node.name = name
-            node.kind = "group"
-            node.kind_label = "Folder"
-            node.collapsed = divider == 2
-            node.color = m["color"]
-            node.opacity = m["opacity"]
-            node.bounds = full
-            target.children.append(node)
+    for rec in reversed(recs):
+        if rec["div"] == 3:  # '</Layer group>': close the innermost open folder
+            if len(stack) > 1:
+                stack.pop()
+            continue
+        node = _embedded_node(rec, width, height)
+        if rec["div"] in (1, 2):  # named folder start
+            node.kind, node.kind_label = "group", "Folder"
+            node.collapsed = rec["div"] == 2
+            stack[-1].children.append(node)
+            stack.append(node)
         else:
-            kind, klabel = kind_for(m["type"])
-            stack[-1].children.append(
-                LayerNode(
-                    name=name, kind=kind, kind_label=klabel,
-                    color=m["color"], opacity=m["opacity"],
-                    visible=True, bounds=full,
-                )
-            )
-
-    def prune(n: LayerNode) -> None:
-        n.children = [
-            c for c in n.children
-            if not (c.kind == "group" and not c.children and c.name == "</Layer group>")
-        ]
-        for c in n.children:
-            prune(c)
-
-    def rev(n: LayerNode) -> None:
-        n.children = list(reversed(n.children))
-        for c in n.children:
-            rev(c)
-
-    prune(root)
-    rev(root)
+            stack[-1].children.append(node)
+    while len(stack) > 1:  # unbalanced file: flush leftovers onto the parent
+        stack[-2].children.append(stack.pop())
     return root.children
 
 

@@ -84,7 +84,10 @@ graph TD
   `MIB8` blocks) and omit the `37725`/`37726` tags entirely. ca-pa detects that
   shape and reads the small metadata blocks (names, dividers, colours, opacity,
   type) while skipping the large image-data blocks, so even a +1 GB file costs
-  a few megabytes.
+  a few megabytes. Names, hierarchy and colours are always recovered and match
+  the equivalent PSD; when a given exporter omits an individual piece of layer
+  metadata (e.g. a specific opacity or blend mode) ca-pa falls back to the
+  Photoshop defaults and says so with a warning.
 * **Dispatch** — `ca_pa.parser.parse_file()` picks the reader by extension and,
   more reliably, by magic bytes (`8BPS` for PSD/PSB, `II*\0`/`MM\0*` for
   TIFF), so a mis-named file still opens correctly. A file that can't be read
@@ -92,6 +95,11 @@ graph TD
 
 The data model is two plain dataclasses — `DocumentInfo` (canvas + layer tree)
 and `LayerNode` (one layer) — with `to_dict()`/`to_json()` for scripting.
+
+* **Colour inheritance** — a layer without its own sheet colour takes the
+  colour of the closest folder above it (an explicit layer colour always wins),
+  mirroring how Photoshop displays the Layers panel. Swatches use the exact
+  tones of the project palette (see `docs/screenshot.png`).
 
 ```mermaid
 classDiagram
@@ -264,10 +272,10 @@ CA_PA_SAMPLES=/ruta/samples .venv/bin/python -m pytest
 ## Packaging & CI
 
 A GitHub Actions workflow (`.github/workflows/build.yml`) runs the test
-suite once, then **builds `ca-pa.app` with PyInstaller twice** — once on an
-Apple Silicon runner (`macos-latest`, arm64) and once on an Intel runner
-(`macos-13`, x86_64) — because PyInstaller is not cross-platform and each
-architecture must be compiled natively.  Pushing a `v*` tag then publishes a
+suite once, then **builds `ca-pa.app` with PyInstaller twice** — arm64
+natively and x86_64 through Rosetta 2 on Apple Silicon runners
+(`macos-latest`) — because PyInstaller is not cross-platform and each
+architecture must be compiled with its own interpreter.  Pushing a `v*` tag then publishes a
 single GitHub Release containing both zips
 (`ca-pa-macos-arm64.zip` and `ca-pa-macos-intel.zip`).  Manual runs are
 available from the *Actions* tab and keep their builds as run artifacts.
