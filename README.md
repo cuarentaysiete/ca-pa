@@ -140,7 +140,7 @@ zip for your chip, unzip it, and you have `ca-pa.app`:
 | Your Mac has… | Download |
 |---|---|
 | Apple Silicon (M1/M2/M3/M4, 2020+) | `ca-pa-macos-arm64.zip` |
-| Intel | `ca-pa-macos-intel.zip` |
+| Intel | *coming in the next release* |
 
 <details>
 <summary><b>Building from source</b> (macOS only)</summary>
@@ -272,12 +272,12 @@ CA_PA_SAMPLES=/ruta/samples .venv/bin/python -m pytest
 ## Packaging & CI
 
 A GitHub Actions workflow (`.github/workflows/build.yml`) runs the test
-suite once, then **builds `ca-pa.app` with PyInstaller twice** — arm64
-natively and x86_64 through Rosetta 2 on Apple Silicon runners
-(`macos-latest`) — because PyInstaller is not cross-platform and each
-architecture must be compiled with its own interpreter.  Pushing a `v*` tag then publishes a
-single GitHub Release containing both zips
-(`ca-pa-macos-arm64.zip` and `ca-pa-macos-intel.zip`).  Manual runs are
+suite once, then **builds `ca-pa.app` with PyInstaller** on an Apple
+Silicon runner (`macos-latest`) — because PyInstaller is not
+cross-platform, the macOS app must be assembled on macOS.  An Intel
+(x86_64, Rosetta 2) leg is in preparation and will join the matrix once
+its interpreter pin is sorted out.  Pushing a `v*` tag then publishes a
+single GitHub Release with the `ca-pa-macos-arm64.zip`.  Manual runs are
 available from the *Actions* tab and keep their builds as run artifacts.
 
 ## License

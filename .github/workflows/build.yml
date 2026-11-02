@@ -1,18 +1,16 @@
 # Build and release the ca-pa macOS app.
 #
-#   * every push to a version tag (v*)  -> tests, build for BOTH architectures,
-#                                          one GitHub Release with two zips:
-#                                            ca-pa-macos-arm64.zip  (Apple Silicon)
-#                                            ca-pa-macos-intel.zip (Intel)
-#   * "Run workflow" (manual)           -> same builds, artifacts only
+#   * every push to a version tag (v*)  -> tests, build the .app,
+#                                          one GitHub Release with the zip:
+#                                            ca-pa-macos-arm64.zip (Apple Silicon)
+#   * "Run workflow" (manual)           -> same build, artifacts only
 #
 # The build must happen on macOS because PyInstaller is not cross-platform:
-# a Linux runner cannot produce a .app bundle.  Both architectures are built
-# on the (plentiful) Apple Silicon runner: arm64 natively, x86_64 through
-# Rosetta 2 (`actions/setup-python` with `architecture: x86_64` installs an
-# x86_64 interpreter, and PyInstaller bundles exactly what it is running, so
-# the resulting .app is a genuine Intel build).  This avoids the scarce
-# `macos-13` Intel runners, which can sit queued for days.
+# a Linux runner cannot produce a .app bundle.  The arm64 leg builds natively
+# on the (plentiful) Apple Silicon runner.  An x86_64 (Intel, Rosetta 2) leg
+# is prepared but currently disabled: the runner images don't offer a Python
+# 3.11 x86_64 build to actions/setup-python yet, so the setup step fails.
+# See the matrix comment for the exact TODO.
 name: build
 
 on:
@@ -47,7 +45,12 @@ jobs:
     strategy:
       fail-fast: false          # let the other arch finish even if one fails
       matrix:
-        arch: [arm64, x86_64]
+        arch: [arm64]
+        # TODO(intel): the x86_64 leg is parked for now — the current
+        # macos runner images don't ship a Python 3.11 x86_64 build that
+        # actions/setup-python accepts, so that leg fails in setup.  Re-add
+        # "x86_64" here (Rosetta 2 handles the emulation) once a working
+        # interpreter version for the image is pinned.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -94,11 +97,14 @@ jobs:
         with:
           name: ca-pa-macos-arm64
           path: dist/arm64
-      - name: Download Intel build
-        uses: actions/download-artifact@v4
-        with:
-          name: ca-pa-macos-intel
-          path: dist/intel
+      # The Intel (x86_64) zip is coming: the build leg is currently
+      # disabled (see the matrix above).  Re-add this step when it returns:
+      #
+      #   - name: Download Intel build
+      #     uses: actions/download-artifact@v4
+      #     with:
+      #       name: ca-pa-macos-intel
+      #       path: dist/intel
 
       # Publish a GitHub Release only for real tag pushes; manual runs keep
       # their artifacts in the run page instead.
@@ -110,7 +116,6 @@ jobs:
           name: ca-pa ${{ github.ref_name }}
           files: |
             dist/arm64/ca-pa-macos-arm64.zip
-            dist/intel/ca-pa-macos-intel.zip
           body: |
             ca-pa — inspect the layer structure of big layered TIFF/PSD files
             without decoding the pixels.
@@ -120,6 +125,6 @@ jobs:
             | Chip | File |
             |---|---|
             | Apple Silicon (M1/M2/M3/M4…) | `ca-pa-macos-arm64.zip` |
-            | Intel (2020 or earlier) | `ca-pa-macos-intel.zip` |
+            | Intel | *coming in the next release* |
 
             Unzip and drag your layered files onto the window.

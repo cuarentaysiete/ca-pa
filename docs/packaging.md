@@ -45,18 +45,21 @@ onto the window.
 ## CI builds (both architectures)
 
 `.github/workflows/build.yml` mirrors the local build in GitHub Actions:
-the test suite runs once on `macos-latest`, and the `build` job then runs
-as a **matrix over two architectures**, both on Apple Silicon runners:
+the test suite runs once on `macos-latest`, and the `build` job runs as a
+matrix (currently a single leg):
 
 | runner | architecture | artifact / release asset |
 |---|---|---|
 | `macos-latest` | Apple Silicon (arm64, native) | `ca-pa-macos-arm64.zip` |
-| `macos-latest` | Intel (x86_64, via Rosetta 2) | `ca-pa-macos-intel.zip` |
+| `macos-latest` | Intel (x86_64, via Rosetta 2) | *prepared, disabled* |
 
-The Intel leg asks `actions/setup-python` for an `x86_64` interpreter, which
-runs under Rosetta; PyInstaller bundles the interpreter it is actually
-running, so the resulting `.app` is a genuine Intel build.  This keeps the
-workflow independent of the scarce `macos-13` Intel runners.
+The Intel leg would ask `actions/setup-python` for an `x86_64` interpreter
+running under Rosetta; PyInstaller then bundles exactly that, yielding a
+genuine Intel `.app`.  It is disabled for now because the current runner
+images don't ship a Python 3.11 x86_64 build the action accepts — the leg
+is fully written (see the matrix comment) and only needs a working
+interpreter pin.  This also keeps the workflow independent of the scarce
+`macos-13` Intel runners.
 
 A final `release` job collects both zips and, on a `v*` tag push, publishes
 them together in one GitHub Release (manual runs keep them as run
