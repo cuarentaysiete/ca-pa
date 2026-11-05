@@ -69,6 +69,17 @@ for _name in (
 
 ENCODING = "macroman"
 
+_COLOR_MODE_NAMES = {
+    0: "Bitmap",
+    1: "Grayscale",
+    2: "Indexed",
+    3: "RGB",
+    4: "CMYK",
+    7: "Multichannel",
+    8: "Duotone",
+    9: "Lab",
+}
+
 
 def _header(fp: io.BufferedIOBase) -> FileHeader:
     magic = fp.read(4)
@@ -340,12 +351,26 @@ def _map_children(psd_layer) -> list[LayerNode]:
 
 # -- public API ---------------------------------------------------------------
 
-def parse_psd(path: str) -> DocumentInfo:
-    """Parse a PSD/PSB file into a :class:`DocumentInfo` (metadata only)."""
-    path = os.fspath(path)
-    size_bytes = os.path.getsize(path)
-    header, resources, records, warnings, count = _load_structure(path)
+def build_doc_from_records(
+    header: Any,
+    resources: Any,
+    records: list[Any],
+    *,
+    path: str,
+    size_bytes: int,
+    format_name: str,
+    warnings: list[str],
+    count: int,
+) -> DocumentInfo:
+    """Map already-read PSD layer records onto a :class:`DocumentInfo`.
 
+    Shared by true PSD/PSB files and by the *standard* embedded layer section
+    that some layered TIFFs carry (the ``Layr`` block inside an "Adobe
+    Photoshop Document Data Block").  Both store byte-identical layer
+    records, so one code path maps either source to the same tree -- names,
+    nesting, kinds, colours, opacity, blends, masks and effects included.
+    No pixel data is touched: only the records and their ALI blocks are read.
+    """
     image = _build_psdimage(header, resources, records)
     layers = []
     for layer in reversed(list(image._layers)):  # file order: bottom-to-top
@@ -353,30 +378,20 @@ def parse_psd(path: str) -> DocumentInfo:
         node.children = _map_children(layer)
         layers.append(node)
 
-    color_modes = {
-        0: "Bitmap",
-        1: "Grayscale",
-        2: "Indexed",
-        3: "RGB",
-        4: "CMYK",
-        7: "Multichannel",
-        8: "Duotone",
-        9: "Lab",
-    }
     doc = DocumentInfo(
         path=path,
-        format="psb" if header.version == 2 else "psd",
+        format=format_name,
         size_bytes=size_bytes,
         width=header.width,
         height=header.height,
         bit_depth=header.depth,
-        color_mode=color_modes.get(int(header.color_mode), str(header.color_mode)),
+        color_mode=_COLOR_MODE_NAMES.get(int(header.color_mode), str(header.color_mode)),
         channels=header.channels,
         has_alpha=header.channels > 3 or any(
             any(c.id == -1 for c in r.channel_info) for r in records
         ),
         layers=layers,
-        warnings=warnings,
+        warnings=list(warnings),
     )
     if count != 0 and not layers:
         doc.flat = True
@@ -399,3 +414,20 @@ def parse_psd(path: str) -> DocumentInfo:
             )
         ]
     return doc
+
+
+def parse_psd(path: str) -> DocumentInfo:
+    """Parse a PSD/PSB file into a :class:`DocumentInfo` (metadata only)."""
+    path = os.fspath(path)
+    size_bytes = os.path.getsize(path)
+    header, resources, records, warnings, count = _load_structure(path)
+    return build_doc_from_records(
+        header,
+        resources,
+        records,
+        path=path,
+        size_bytes=size_bytes,
+        format_name="psb" if header.version == 2 else "psd",
+        warnings=warnings,
+        count=count,
+    )

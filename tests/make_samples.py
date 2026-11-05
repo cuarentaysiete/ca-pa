@@ -236,8 +236,10 @@ def build_sample_tiff(path: str, size: tuple[int, int] = (64, 64)) -> dict:
     ifd0_tags = [
         (256, 4, struct.pack("<I", size[0])),
         (257, 4, struct.pack("<I", size[1])),
-        (258, 3, struct.pack("<H", 3)),
-        (259, 3, struct.pack("<HHH", 8, 8, 8)),
+        # 258 BitsPerSample, 259 Compression, 277 SamplesPerPixel (correct tags)
+        (258, 3, struct.pack("<HHH", 8, 8, 8)),
+        (259, 3, struct.pack("<H", 1)),
+        (277, 3, struct.pack("<H", 3)),
         (262, 3, struct.pack("<H", 2)),
         (273, 4, struct.pack("<I", 0)),
         (279, 4, struct.pack("<I", 1)),
@@ -251,8 +253,10 @@ def build_sample_tiff(path: str, size: tuple[int, int] = (64, 64)) -> dict:
     layer_tags = [
         (256, 4, struct.pack("<I", size[0])),
         (257, 4, struct.pack("<I", size[1])),
-        (258, 3, struct.pack("<H", 3)),
-        (259, 3, struct.pack("<HHH", 8, 8, 8)),
+        # 258 BitsPerSample, 259 Compression, 277 SamplesPerPixel (correct tags)
+        (258, 3, struct.pack("<HHH", 8, 8, 8)),
+        (259, 3, struct.pack("<H", 1)),
+        (277, 3, struct.pack("<H", 3)),
         (262, 3, struct.pack("<H", 2)),
         (273, 4, struct.pack("<I", 0)),
         (339, 3, struct.pack("<H", 1)),
@@ -378,8 +382,10 @@ def build_mib8_tiff(path: str, size: tuple[int, int] = (32, 32)) -> dict:
     ifd0_tags = [
         (256, 3, struct.pack("<H", w)),
         (257, 3, struct.pack("<H", h)),
-        (258, 3, struct.pack("<H", 3)),
-        (259, 3, struct.pack("<HHH", 8, 8, 8)),
+        # 258 BitsPerSample, 259 Compression, 277 SamplesPerPixel (correct tags)
+        (258, 3, struct.pack("<HHH", 8, 8, 8)),
+        (259, 3, struct.pack("<H", 1)),
+        (277, 3, struct.pack("<H", 3)),
         (262, 3, struct.pack("<H", 2)),
         (273, 4, struct.pack("<I", 100)),
         (37724, 7, section),  # byte-swapped PSD layer section; no 37725/37726

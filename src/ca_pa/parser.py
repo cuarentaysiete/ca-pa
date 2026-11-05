@@ -22,9 +22,10 @@ def sniff(path: str) -> str:
     """Return the ca-pa format name for a path, or raise UnsupportedFormatError."""
     with open(path, "rb") as fp:
         head = fp.read(8)
-    if head[:4] in (b"8BPS",):
+    if head[:4] == b"8BPS":
         return "psd"
-    if len(head) >= 4 and head[:2] in (b"II", b"MM") and head[2:4] in (b"*\x00", b"+\x00"):
+    # II*\x00 / MM\x00* = classic TIFF (little/big endian); II+\x00 / MM\x00+ = BigTIFF
+    if head[:4] in (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+"):
         return "tiff"
     raise UnsupportedFormatError(
         "%s: not a supported file (expected a PSD, PSB or TIFF)" % os.path.basename(path)

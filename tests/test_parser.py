@@ -247,6 +247,54 @@ def test_real_tiff_matches_psd_reference():
                 assert ref[idx] == got[idx], (tif, ref[1], fname, ref[idx], got[idx])
 
 
+def _flat_full(nodes, depth=0):
+    """Flatten keeping every per-layer field the model carries."""
+    out = []
+    for n in nodes:
+        out.append(
+            (
+                depth,
+                n.name,
+                n.kind,
+                n.color,
+                bool(n.visible),
+                n.opacity,
+                n.blend_mode,
+                bool(n.has_alpha_mask),
+                bool(n.has_vector_mask),
+                tuple(n.effects),
+            )
+        )
+        out.extend(_flat_full(n.children, depth + 1))
+    return out
+
+
+@pytest.mark.skipif(
+    not all(
+        os.path.isfile(os.path.join(REAL_SAMPLES, f))
+        for f in ("sample2.psd", "sample2.tif", "sample2.psb")
+    ),
+    reason="sample2 reference trio not present",
+)
+def test_real_sample2_tif_matches_psd_reference():
+    """sample2.tif is a *standard* embedded Photoshop TIFF (normal ``8BIM`` keys).
+
+    Unlike the legacy byte-swapped MIB8 exporter -- which silently drops a
+    handful of markers -- a standard embedded layer section is byte-identical
+    to the PSD/PSB layer records, so the TIFF parse must reproduce the PSD
+    *exactly*: same layers, nesting, kinds, colours, visibility, opacity,
+    blends, masks and effects.  The PSD is the reference; both the TIFF and the
+    PSB must match it field for field.
+    """
+    psd = _flat_full(parse_file(os.path.join(REAL_SAMPLES, "sample2.psd")).layers)
+    assert len(psd) > 100  # the real reference is a large document
+    for other in ("sample2.tif", "sample2.psb"):
+        got = _flat_full(parse_file(os.path.join(REAL_SAMPLES, other)).layers)
+        assert len(got) == len(psd), other
+        for ref, g in zip(psd, got):
+            assert ref == g, (other, ref[1], ref, g)
+
+
 def test_color_inheritance():
     from ca_pa.model import LayerNode
     from ca_pa.parser import _inherit_colors

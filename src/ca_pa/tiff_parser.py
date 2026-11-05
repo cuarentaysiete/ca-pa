@@ -14,11 +14,23 @@ fit in the IFD entry; long values (the layer ALI stream, resource blocks)
 are read from the TIFF data area. Strip offsets/counts are never followed,
 so a 2 GB file costs a few megabytes.
 
+Three shapes of layer data are understood, all via tag ``37724``:
+
+* **Classic** -- the 37724/37725/37726 triple (little- or big-endian).
+* **Byte-swapped** -- a whole *byte-swapped* PSD layer section (``MIB8``
+  blocks); only the small metadata blocks are read, large image blocks are
+  skipped.  Best-effort: a given exporter may drop individual markers.
+* **Standard embedded** -- a normal, non-swapped "Adobe Photoshop Document
+  Data Block" holding ordinary ``8BIM`` resources, one of which is ``Layr``.
+  Its layer records are byte-identical to a PSD's, so the section is parsed
+  with the shared PSD record reader and reproduces the file exactly.
+
 BigTIFF is detected and rejected with a clear error for now.
 """
 
 from __future__ import annotations
 
+import io
 import os
 import struct
 from typing import IO, Any
@@ -29,11 +41,11 @@ from .model import DocumentInfo, LayerNode
 
 TAG_IMAGE_WIDTH = 256
 TAG_IMAGE_LENGTH = 257
-TAG_SAMPLES_PER_PIXEL = 258
-TAG_BITS_PER_SAMPLE = 259
+TAG_BITS_PER_SAMPLE = 258
 TAG_COMPRESSION = 259
 TAG_PHOTOMETRIC = 262
 TAG_STRIP_OFFSETS = 273
+TAG_SAMPLES_PER_PIXEL = 277
 TAG_STRIP_BYTE_COUNTS = 279
 TAG_EXTRA_SAMPLES = 339
 TAG_X_RESOLUTION = 282
@@ -331,6 +343,184 @@ _EMBED_MARKER = b"Adobe Photoshop Document Data Block"
 _MIB8 = b"MIB8"  # little-endian spelling of the "8BIM" block signature
 
 
+class _FileWindow(io.IOBase):
+    """Seekable view over an open file limited to ``[base, end)``.
+
+    Lets psd-tools' low-level record readers run straight on the embedded
+    layer section of a layered TIFF *without* loading that section -- which
+    can be hundreds of MB and ends in raw channel/pixel data -- into memory.
+    Reads are transparently redirected to the underlying file handle.
+    """
+
+    def __init__(self, fp: IO[bytes], base: int, end: int):
+        self._fp = fp
+        self._base = base
+        self._end = end
+        self._pos = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self._pos
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        if whence == 0:
+            self._pos = offset
+        elif whence == 1:
+            self._pos = self._pos + offset
+        else:  # SEEK_END: measured from the end of this window
+            self._pos = (self._end - self._base) + offset
+        return self._pos
+
+    def read(self, size: int = -1) -> bytes:
+        self._fp.seek(self._base + self._pos)
+        if size < 0:
+            size = max(0, (self._end - self._base) - self._pos)
+        data = self._fp.read(size)
+        self._pos += len(data)
+        return data
+
+
+def _photo_to_psd_color(photo: int) -> int:
+    """Map a TIFF PhotometricInterpretation onto a PSD colour-mode number.
+
+    The two schemes differ (TIFF ``2`` = RGB, PSD ``3`` = RGB), so the value
+    read from the IFD cannot be fed straight into a :class:`FileHeader`.
+    """
+    return {0: 0, 1: 1, 2: 3, 3: 2, 4: 4, 5: 3, 6: 9}.get(photo, 3)
+
+
+def _entry_size(typ: int, count: int) -> int:
+    """Byte size of an IFD value for the given TIFF type and count."""
+    return {1: 1, 2: 2, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8}.get(
+        typ, 1
+    ) * count
+
+
+def _state_value_offset(
+    reader: _TIFFReader, entry: tuple[int, int, bytes, bytes] | None
+) -> int | None:
+    """Absolute file offset of the tag-37724 value, or ``None`` if inline."""
+    if entry is None:
+        return None
+    typ, count, _inline, raw = entry
+    if _entry_size(typ, count) <= 4:
+        return None  # tiny inline value cannot hold an embedded document
+    return reader.u32(raw, 8)
+
+
+def _embed_kind(reader: _TIFFReader, entries) -> str | None:
+    """Classify the tag-37724 payload without loading it.
+
+    Returns ``"standard"`` for the normal embedded Photoshop layer section
+    (marker followed by ``8BIM`` resources, holding a ``Layr`` block whose
+    records are byte-identical to a PSD's), ``"mib8"`` for the non-standard
+    byte-swapped variant, or ``None`` when 37724 holds classic layer state.
+    """
+    off = _state_value_offset(reader, entries.get(TAG_LAYER_STATE))
+    if off is None:
+        return None
+    fp = reader.fp
+    fp.seek(off)
+    head = fp.read(len(_EMBED_MARKER) + 8)
+    if not head.startswith(_EMBED_MARKER):
+        return None
+    after = head[len(_EMBED_MARKER) :]
+    nul = 1 if after[:1] == b"\x00" else 0
+    tag4 = after[nul : nul + 4]
+    if tag4 == b"8BIM":
+        return "standard"
+    if tag4 == _MIB8:
+        return "mib8"
+    return None
+
+
+def _parse_standard_embedded(
+    reader: _TIFFReader,
+    entries: dict[int, tuple[int, int, bytes, bytes]],
+    path: str,
+    size_bytes: int,
+    warnings: list[str],
+) -> DocumentInfo:
+    """Decode a *standard* embedded Photoshop layer section from a TIFF.
+
+    Some writers (this user's ``sample2.tif``) store, in tag 37724, an
+    "Adobe Photoshop Document Data Block" that is simply a mini image-resource
+    stream: ``marker NUL`` followed by ordinary ``8BIM`` resources, one of
+    which is ``Layr``.  The ``Layr`` payload is ``u16 count`` followed by the
+    exact same layer records a PSD keeps -- so they are parsed with
+    psd-tools' own record reader and mapped through the shared
+    :func:`build_doc_from_records`.  Only the records and their small ALI
+    blocks are read; the trailing channel/pixel data is never touched.
+    """
+    from psd_tools.psd.header import FileHeader
+    from psd_tools.psd.image_resources import ImageResources
+    from psd_tools.psd.layer_and_mask import LayerRecords
+
+    from .psd_parser import ENCODING, build_doc_from_records
+
+    width = _first_int(reader, entries.get(TAG_IMAGE_WIDTH))
+    height = _first_int(reader, entries.get(TAG_IMAGE_LENGTH))
+    photo = _first_int(reader, entries.get(TAG_PHOTOMETRIC), 2)
+    spp = _first_int(reader, entries.get(TAG_SAMPLES_PER_PIXEL), 3)
+    bps_raw = _tag_bytes(reader, entries.get(TAG_BITS_PER_SAMPLE), TAG_BITS_PER_SAMPLE) or b""
+    depth = max([reader.u16(bps_raw, j * 2) for j in range(len(bps_raw) // 2)] or [8])
+
+    off = _state_value_offset(reader, entries[TAG_LAYER_STATE])
+    if off is None:  # pragma: no cover - _embed_kind already checked this
+        raise ParseError("embedded layer block vanished")
+
+    fp = reader.fp
+    fp.seek(off + len(_EMBED_MARKER))
+    nul = 1 if fp.read(1) == b"\x00" else 0
+    pos = off + len(_EMBED_MARKER) + nul
+    body_start = None
+    while pos + 12 <= size_bytes:
+        fp.seek(pos)
+        hdr = fp.read(12)
+        if len(hdr) < 12 or hdr[:4] != b"8BIM":
+            break
+        key = hdr[4:8]
+        length = struct.unpack_from(">I", hdr, 8)[0]
+        if key == b"Layr":
+            body_start = pos + 12
+            break
+        pos += 12 + length
+    if body_start is None:
+        raise ParseError("embedded layer block found but holds no 'Layr' resource")
+
+    fp.seek(body_start)
+    (count,) = struct.unpack_from(">h", fp.read(2))
+    window = _FileWindow(fp, body_start + 2, size_bytes)
+    records = LayerRecords.read(window, abs(count), ENCODING, 1)
+
+    has_alpha = any(any(c.id == -1 for c in r.channel_info) for r in records)
+    # Document-level channel count mirrors the PSD header: alpha lives in
+    # per-layer masks, not as an extra document channel.
+    header = FileHeader(
+        channels=spp,
+        height=height,
+        width=width,
+        depth=depth,
+        color_mode=_photo_to_psd_color(photo),
+    )
+    warnings.append("Photoshop layers embedded in the TIFF (standard 'Layr' block)")
+    return build_doc_from_records(
+        header,
+        ImageResources(),
+        records,
+        path=path,
+        size_bytes=size_bytes,
+        format_name="tiff",
+        warnings=warnings,
+        count=count,
+    )
+
+
 def _looks_like_embedded(blob: bytes) -> bool:
     """True when ``blob`` is the byte-swapped PSD "Document Data Block"."""
     head = blob.lstrip(b"\r\n ")[: len(_EMBED_MARKER)]
@@ -493,6 +683,9 @@ def _parse_tiff_body(
     photo = tag_int(TAG_PHOTOMETRIC, 2)
     extra_samples = tag_int(TAG_EXTRA_SAMPLES)
     has_alpha = extra_samples > 0
+
+    if _embed_kind(reader, entries) == "standard":
+        return _parse_standard_embedded(reader, entries, path, size_bytes, warnings)
 
     state_raw = get(TAG_LAYER_STATE)
     _resources = _parse_resources(get(TAG_IMAGE_RESOURCES) or b"")

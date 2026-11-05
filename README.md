@@ -60,10 +60,13 @@ graph TD
     D --> G{Layered TIFF Type}
     G -->|Classic Photoshop| H[Read Tags:<br/>37724, 37725, 37726]
     G -->|Byte-swapped| I[Read Tag 37724<br/>MIB8 Metadata Blocks]
-    
+    G -->|Standard embedded| M[Read Tag 37724<br/>Layr records = PSD]
+
     E --> J((Data Model))
     H --> J
     I --> J
+    M -.->|Seek Past| F
+    M --> J
     
     J --> K[GUI Window]
     J --> L[CLI Output<br/>Text / JSON]
@@ -88,6 +91,14 @@ graph TD
   the equivalent PSD; when a given exporter omits an individual piece of layer
   metadata (e.g. a specific opacity or blend mode) ca-pa falls back to the
   Photoshop defaults and says so with a warning.
+* **Standard embedded TIFF** — other writers put a normal, *non-swapped* "Adobe
+  Photoshop Document Data Block" (ordinary `8BIM` resources, including a `Layr`
+  block) in the same `37724` tag. Its layer records are **byte-identical to a
+  PSD's**, so ca-pa reuses the exact PSD record reader and reproduces the file
+  perfectly — names, nesting, kinds, colours, visibility, opacity, blends, masks
+  and effects all match the equivalent PSD. The multi-hundred-MB trailing image
+  data is still only sought over, never read. This is the format of the
+  `sample2.tif` reference file.
 * **Dispatch** — `ca_pa.parser.parse_file()` picks the reader by extension and,
   more reliably, by magic bytes (`8BPS` for PSD/PSB, `II*\0`/`MM\0*` for
   TIFF), so a mis-named file still opens correctly. A file that can't be read
@@ -184,8 +195,9 @@ tree with every field above), which is handy for feeding other tools.
 | ------ | ----- |
 | PSD | 8-bit and 16-bit, any colour mode. |
 | PSB | Big PSD (files > 300 MB / > 30 000 px). |
-| Layered TIFF | The classic Photoshop `37724`/`37725`/`37726` triple. |
-| TIFF (byte-swapped) | The non-standard embedded-PSD variant some tools write. |
+| Layered TIFF | The classic Photoshop `37724`/`37725`/`37726` triple (little- or big-endian). |
+| TIFF (byte-swapped) | The non-standard, byte-swapped embedded-PSD variant some tools write. |
+| TIFF (standard embedded) | A normal `8BIM` `Layr` block in `37724`; layer metadata matches the PSD exactly. |
 | Flat TIFF / PSD | Detected; shown as one merged layer with a note. |
 
 ## Project layout
@@ -236,7 +248,7 @@ src/ca_pa/
     run_app.py      single frozen entry point for the PyInstaller bundle
     parser.py       dispatch by extension + magic bytes
     psd_parser.py   PSD/PSB reader (metadata only, seeks past pixels)
-    tiff_parser.py  layered-TIFF reader (classic triple + byte-swapped block)
+    tiff_parser.py  layered-TIFF reader (classic triple + embedded MIB8/standard block)
     model.py        DocumentInfo / LayerNode dataclasses
     labels.py       blend modes, sheet colours, adjustments, effect names
     errors.py       ParseError
