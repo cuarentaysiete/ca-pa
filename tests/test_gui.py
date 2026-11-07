@@ -49,6 +49,35 @@ def test_type_label_and_notes():
     assert "vector mask" in gui._notes(pix)
 
 
+def test_columns_deduplicate_colour_into_name(qapp):
+    """The Colour column is gone; colour lives in the Name cell background."""
+    assert gui.COLUMNS == ["Name", "Type", "Opacity", "Blend", "Notes"]
+    assert "Colour" not in gui.COLUMNS
+
+
+def test_make_item_paints_name_and_attenuates_hidden(qapp):
+    from ca_pa.gui import _make_item
+    from ca_pa.model import LayerNode
+
+    # A coloured layer paints its colour into the Name cell (column 0).
+    colored = LayerNode(name="c", kind="group", kind_label="Folder", color="#e78679")
+    item = _make_item(colored)
+    assert item.text(0) == "c"
+    assert item.background(0).color().name().lower() == "#e78679"
+
+    # An uncoloured folder falls back to the neutral container fill.
+    plain = LayerNode(name="f", kind="group", kind_label="Folder")
+    assert _make_item(plain).background(0).color().name().lower() == "#ebebf5"
+
+    # A hidden row gets attenuated (non-black) text on every column.
+    hidden = LayerNode(name="h", kind="pixel", visible=False)
+    hi = _make_item(hidden)
+    for col in range(len(gui.COLUMNS)):
+        c = hi.foreground(col).color()
+        assert c.isValid(), col
+        assert c.name().lower() != "#000000", (col, c.name())
+
+
 def test_window_constructs(qapp, samples):
     window = MainWindow()
     assert window.tree.columnCount() == len(gui.COLUMNS)

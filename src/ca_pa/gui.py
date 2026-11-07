@@ -35,8 +35,12 @@ from .parser import parse_file
 #: file extensions we accept (drag-and-drop and the open dialog).
 SUPPORTED_EXTS = {".tif", ".tiff", ".psd", ".psb"}
 
-#: the tree's columns, in order.
-COLUMNS = ["Name", "Type", "Colour", "Opacity", "Blend", "Notes"]
+#: the tree's columns, in order.  Each layer's colour is drawn as the Name
+#: cell's background (see :func:`_make_item`), so there is no Colour column.
+COLUMNS = ["Name", "Type", "Opacity", "Blend", "Notes"]
+
+#: RGB used to attenuate the text of hidden rows.
+_DIMMED_TEXT_RGB = (140, 140, 140)
 
 
 def _resource(name: str) -> str:
@@ -142,17 +146,21 @@ def _make_item(layer: LayerNode) -> QTreeWidgetItem:
     item = QTreeWidgetItem()
     item.setText(0, layer.name)
     item.setText(1, _type_label(layer))
-    item.setText(3, "%d%%" % (layer.opacity * 100 // 255))
-    item.setText(4, layer.blend_mode or "Normal")
-    item.setText(5, _notes(layer))
+    item.setText(2, "%d%%" % (layer.opacity * 100 // 255))
+    item.setText(3, layer.blend_mode or "Normal")
+    item.setText(4, _notes(layer))
+    # The Name cell's background carries the layer's colour (inherited from the
+    # nearest coloured folder when the layer has none of its own).
     color = _swatch(layer.color)
     if color is not None:
-        item.setBackground(2, color)
-    elif layer.color:
-        item.setText(2, layer.color)
-    if layer.kind == "folder":
-        # folders get a subtle fill so they read as containers
-        item.setBackground(0, QColor(235, 235, 245))
+        item.setBackground(0, color)
+    elif layer.kind == "group":
+        item.setBackground(0, QColor(235, 235, 245))  # uncoloured container
+    # Hidden rows are rendered with attenuated text across every column.
+    if not layer.visible:
+        muted = QColor(*_DIMMED_TEXT_RGB)
+        for col in range(len(COLUMNS)):
+            item.setForeground(col, muted)
     item.setData(0, Qt.ItemDataRole.UserRole, layer)
     for child in layer.children:
         item.addChild(_make_item(child))

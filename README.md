@@ -9,7 +9,7 @@ layers, with each layer's metadata. It does this **without decoding a single
 pixel**, so a multi-hundred-MB file with 30+ layers opens in a couple of
 seconds and uses a few tens of megabytes of RAM.
 
-<p align="center"><img src="docs/screenshot.png" alt="ca-pa inspecting a 26-layer PSD" width="760"></p>
+<p align="center"><img src="docs/screenshot.png" alt="ca-pa inspecting a 26-layer layered TIFF" width="760"></p>
 The name is a nod to *capas* (Spanish for “layers”).
 
 ---
@@ -29,18 +29,18 @@ its structure and metadata, and move on, without a heavyweight editor.
 
 For every **layer** (and folder):
 
-| Field | Meaning |
-| ----- | ------- |
-| **Name** | The layer's name. |
+| Column | Contents |
+| ------ | -------- |
+| **Name** | The layer's name. The cell background is painted with the layer's colour. |
 | **Type** | Pixel, Shape, Text, Smart Object, Folder, or Adjustment (with the adjustment kind, e.g. *Curves*). |
-| **Colour** | The layer's colour swatch, when the file sets one. |
-| **Opacity** | 0–100 % (less than 100 % is the common case worth noting). |
+| **Opacity** | 0–100 % (values under 100 % are the ones worth noticing). |
 | **Blend** | The blend mode (Normal, Multiply, Screen, Overlay, …). |
 | **Notes** | Flags: hidden, vector mask, alpha mask, and the layer effects (drop shadow, bevel, glow, …). |
 
+Each layer's **colour** is drawn as the background of its **Name** cell instead of taking a column of its own. A layer with no colour of its own takes the colour of the closest folder above it (an explicit colour always wins), just like the Photoshop Layers panel; a folder with no colour gets a neutral fill. Rows for **hidden** layers are drawn in attenuated (greyed-out) text.
+
 For every **document**: format, canvas size, bit depth, colour mode and the
-total layer count, plus any warnings (e.g. a non-standard layer block that was
-read best-effort, or a flattened file).
+total layer count, plus any warnings (e.g. that a non-standard byte-swapped layer block was decoded, or that the file is flattened).
 
 Files that carry **no layer information** (flattened exports) are detected and
 shown as a single merged layer with a note, rather than failing.
@@ -82,15 +82,18 @@ graph TD
 * **Layered TIFF** — reads the classic Photoshop triple: `37724` (layer state:
   bounds/opacity/blend), `37725` (names) and `37726` (additional layer info:
   colours, effects, folder dividers).
-* **Byte-swapped TIFF** — a number of exporters stash a *whole byte-swapped
-  copy of the PSD layer section* inside TIFF tag `37724` (a sequence of
-  `MIB8` blocks) and omit the `37725`/`37726` tags entirely. ca-pa detects that
-  shape and reads the small metadata blocks (names, dividers, colours, opacity,
-  type) while skipping the large image-data blocks, so even a +1 GB file costs
-  a few megabytes. Names, hierarchy and colours are always recovered and match
-  the equivalent PSD; when a given exporter omits an individual piece of layer
-  metadata (e.g. a specific opacity or blend mode) ca-pa falls back to the
-  Photoshop defaults and says so with a warning.
+* **Byte-swapped TIFF** — some exporters stash a *whole byte-swapped copy of
+  the PSD layer section* inside TIFF tag `37724`: a run of `MIB8` blocks whose
+  multi-byte integers are little-endian and whose four-character tag/blend keys
+  are stored reversed (`norm`→`mron`, `colr`→`rloc`, `Layr`→`ryaL`, …), while
+  names and tagged-block payloads keep their natural order. ca-pa detects that
+  shape, forward-decodes the record stream and normalises each record back to
+  standard PSD form — recovering **every** field a normal PSD keeps (names,
+  nesting, kind, colour, visibility, opacity, blend mode, alpha/vector masks and
+  effects) so the result matches the equivalent PSD exactly — then seeks straight
+  over the large image-data blocks, keeping even a +1 GB file at a few
+  megabytes. An informative warning notes the non-standard block.
+
 * **Standard embedded TIFF** — other writers put a normal, *non-swapped* "Adobe
   Photoshop Document Data Block" (ordinary `8BIM` resources, including a `Layr`
   block) in the same `37724` tag. Its layer records are **byte-identical to a
@@ -233,13 +236,6 @@ graph LR
     
     PSD -.-> LBL
     TIFF -.-> LBL
-```
-
-```
-src/ca_pa/
-    __main__.py     CLI + GUI entry point (python -m ca_pa)
-    run_app.py      single frozen entry point for the PyInstaller bundle
-...
 ```
 
 ```
