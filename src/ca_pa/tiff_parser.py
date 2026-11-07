@@ -550,67 +550,208 @@ def _blend_key_in(data: bytes) -> bytes | None:
     return None
 
 
-def _embedded_node(rec: dict[str, Any], width: int, height: int) -> LayerNode:
-    """Map one decoded ``inul`` record onto a :class:`LayerNode`."""
-    meta = rec["meta"]
-    color = None
-    cl = meta.get(b"rlcl")
-    if cl and len(cl) >= 4:
-        color = labels.SHEET_COLORS.get(struct.unpack_from("<I", cl)[0])
-    opacity = 255
-    op = meta.get(b"rloc")
-    if op and len(op) >= 4:
-        opacity = max(0, min(255, struct.unpack_from("<I", op)[0]))
+def _mib8_name(ali: dict[bytes, bytes]) -> str | None:
+    """UTF-16LE layer name from the ('luni'/'inul') tagged block."""
+    uni = ali.get(b"luni")
+    if uni and len(uni) >= 4:
+        cc = struct.unpack_from("<I", uni, 0)[0]
+        txt = uni[4 : 4 + cc * 2].decode("utf-16-le", "replace")
+        return txt.rstrip("\x00") or None
+    return None
 
-    ty = meta.get(b"rsnl")
-    vu = meta.get(b"vruc")
-    visible = True
-    kind, klabel = "pixel", "Pixel"
-    if ty == b"ryal":  # smart object
+
+def _mib8_effects(ali: dict[bytes, bytes]) -> list[str]:
+    """Effect labels from the modern 'lfx2' descriptor block, best effort.
+
+    The 'lfx2' payload is a structured PS Object descriptor; rather than
+    reverse the whole format we look for the known effect class-name strings
+    it embeds.  Files without effects carry no such block.
+    """
+    raw = ali.get(b"lfx2")
+    if not raw:
+        return []
+    names: list[str] = []
+    for cls, label in labels.EFFECT_LABELS.items():
+        if cls.encode() in raw and label not in names:
+            names.append(label)
+    return names
+
+
+def _rec_divider(rec: dict[str, Any]) -> int | None:
+    """Section-divider state of a record from its 'lsct' block, else None."""
+    div = rec["ali"].get(b"lsct")
+    if div and len(div) >= 4:
+        return struct.unpack_from("<I", div, 0)[0]
+    return None
+
+
+def _embedded_node(rec: dict[str, Any], width: int, height: int) -> LayerNode:
+    """Map one decoded byte-swapped MIB8 record onto a :class:`LayerNode`.
+
+    Every field a normal PSD keeps is present in the record: name, blend
+    mode, opacity, visibility, sheet colour, channel/mask ids, adjustment
+    and effect tagged blocks.  Keys are already reversed back to their
+    standard PSD spelling by :func:`_mib8_records`.
+    """
+    ali = rec["ali"]
+    keys = set(ali)
+
+    # Colour: RGBA swatch ('lsdk') or the 0-11 sheet code ('lclr').
+    color = None
+    lsd = ali.get(b"lsdk")
+    if lsd and len(lsd) >= 4:
+        color = labels.rgba_to_hex(lsd[:4])
+    if color is None:
+        cl = ali.get(b"lclr")
+        if cl and len(cl) >= 4:
+            color = labels.SHEET_COLORS.get(struct.unpack_from("<I", cl, 0)[0])
+
+    chids = rec["chids"]
+    has_alpha_mask = -2 in chids or -3 in chids
+    has_vector_mask = b"Shks" in keys or b"shks" in keys
+
+    if b"plLd" in keys or b"PlLd" in keys or b"SoLd" in keys or b"SoLE" in keys:
         kind, klabel = "smartobject", "Smart Object"
-    elif vu is not None or ty == b"tnoc":
-        kind, klabel = "adjustment", "Adjustment"
-        if ty == b"tnoc":  # this writer marks (hidden) adjustments with it
-            visible = False
+    elif b"TySh" in keys or b"tySh" in keys:
+        kind, klabel = "text", "Text"
+    elif any(k in keys and k not in labels.NON_ADJUSTMENT_KEYS for k in labels.ADJUSTMENT_NAMES):
+        adj = next(
+            k for k in labels.ADJUSTMENT_NAMES if k in keys and k not in labels.NON_ADJUSTMENT_KEYS
+        )
+        kind, klabel = "adjustment", "Adjustment: " + labels.ADJUSTMENT_NAMES[adj]
+    elif any(k in keys for k in (b"vstk", b"vscg", b"vogk", b"vmsk")):
+        kind, klabel = "shape", "Shape"
+    else:
+        kind, klabel = "pixel", "Pixel"
+
     return LayerNode(
-        name=rec["name"],
+        name=_mib8_name(ali) or rec.get("pascal") or "Layer",
         kind=kind,
         kind_label=klabel,
         color=color,
-        opacity=opacity,
-        blend_mode=labels.blend_mode_name(_blend_key_in(vu) if vu else None),
-        visible=visible,
-        bounds=(0, 0, width, height),
+        opacity=rec["opacity"],
+        blend_mode=labels.blend_mode_name(rec["blend_key"]),
+        visible=rec["visible"],
+        bounds=rec["bounds"] or (0, 0, width, height),
+        has_alpha_mask=has_alpha_mask,
+        has_vector_mask=has_vector_mask,
+        effects=_mib8_effects(ali),
     )
 
 
-def _parse_embedded_layers(blob: bytes, width: int, height: int) -> list[LayerNode]:
-    """Decode the non-standard byte-swapped layer section stored in tag 37724.
+def _tagged_blocks(extra: bytes) -> tuple[int, dict[bytes, bytes]]:
+    """Decode the run of ``MIB8`` tagged blocks at the END of a record's extra
+    region (which also holds MaskData, BlendingRanges and the Pascal name).
 
-    Certain writers embed a whole little-endian copy of the Photoshop layer
-    section instead of the classic 37724/37725/37726 triple.  Each layer is
-    an ``inul`` record (UTF-16LE name) followed by small sibling blocks whose
-    keys are byte-reversed spellings of PSD tagged-block keys:
+    Returns ``(start, blocks)`` where *blocks* maps each tag key -- reversed
+    back to its standard PSD spelling -- to its payload.  The start is the
+    earliest offset whose greedy block run reaches the very end of *extra*;
+    returns ``(-1, {})`` when no such run exists.
+    """
+    m = len(extra)
+    best_start, best = -1, {}
+    p = 0
+    while True:
+        p = extra.find(_MIB8, p)
+        if p < 0:
+            break
+        q, d, ok = p, {}, True
+        while q + 12 <= m and extra[q : q + 4] == _MIB8:
+            klen = struct.unpack_from("<I", extra, q + 8)[0]
+            if q + 12 + klen > m:
+                ok = False
+                break
+            d.setdefault(extra[q + 4 : q + 8][::-1], extra[q + 12 : q + 12 + klen])
+            q += 12 + klen
+        if ok and q == m and len(d) > len(best):
+            best_start, best = p, d
+        p += 1
+    return best_start, best
 
-      rlcl  u32 sheet-colour code            (PSD lclr)
-      rloc  u32 opacity 0-255                (PSD colr)
-      rsnl  4-char kind hint: 'ryal' smart object, 'bgnd' background,
-            'tnoc' hidden adjustment, 'test' divider noise
-      vruc  adjustment (curves) data; may embed the 4-char blend key (PSD curv)
-      tcsl  u32 section-divider state: 1/2 = folder start (2 = collapsed),
-            3 = '</Layer group>' end divider
-      mron  layer image data - skipped, never decoded
-      (diyl lblc xfni oknk fpsl dmhs tsuc prxf cles tirb ssap rvyl: unused)
 
-    Records are stored bottom-up, so the tree is rebuilt by scanning them in
-    reverse with a stack: a folder-start record pushes a new folder and its
-    end divider pops it.  Only small (<= 4 KB) blocks are ever read.
+def _mib8_pascal(extra: bytes, start: int) -> str | None:
+    """Recover the ASCII Pascal name that precedes the tagged-block run."""
+    if start >= 2 and extra[start - 1] == 0:
+        i = start - 2
+        while i >= 0 and 32 <= extra[i] < 127:
+            i -= 1
+        if i >= 0:
+            name = extra[i + 1 : start - 1]
+            if len(name) == extra[i] and name:
+                return name.decode("latin-1")
+    return None
+
+
+def _mib8_records(blob: bytes) -> list[dict[str, Any]]:
+    """Forward-decode the byte-swapped layer records of a ``MIB8`` block.
+
+    A ``MIB8`` "Adobe Photoshop Document Data Block" is a standard PSD layer
+    section whose multi-byte integers are little-endian and whose 4-byte
+    tag/blend keys are stored reversed (``8BIM`` -> ``MIB8``, ``norm`` ->
+    ``mron``, ``lclr`` -> ``rlcl``).  Text and tagged-block payloads are left
+    in their natural order, so honouring the per-field endianness recovers
+    *every* field a normal PSD keeps.  The records sit right after a
+    ``MIB8 ryaL`` frame (reversed ``Layr``) and a u16 count; the trailing
+    channel/pixel data is never read.
+    """
+    j = blob.find(_MIB8)
+    start = None
+    count = 0
+    while j >= 0 and j + 14 <= len(blob):
+        if blob[j + 4 : j + 8] == b"ryaL":  # reversed "Layr"
+            count = struct.unpack_from("<H", blob, j + 12)[0]
+            start = j + 14
+            break
+        j = blob.find(_MIB8, j + 1)
+    if start is None or count <= 0:
+        return []
+    out: list[dict[str, Any]] = []
+    P = start
+    n = len(blob)
+    for _ in range(count):
+        if P + 18 > n:
+            break
+        top, left, bottom, right, nch = struct.unpack_from("<4iH", blob, P)
+        cp = P + 18 + nch * 6
+        if cp + 16 > n or blob[cp : cp + 4] != _MIB8:
+            break  # lost alignment: stop rather than emit garbage
+        elen = struct.unpack_from("<I", blob, cp + 12)[0]
+        extra_end = cp + 16 + elen
+        if elen > n or extra_end > n:
+            break
+        chids = (
+            [struct.unpack_from("<h", blob, P + 18 + c * 6)[0] for c in range(nch)]
+            if 0 <= nch <= 128
+            else []
+        )
+        extra = blob[cp + 16 : extra_end]
+        tstart, ali = _tagged_blocks(extra)
+        out.append(
+            {
+                "bounds": (left, top, right, bottom),
+                "blend_key": blob[cp + 4 : cp + 8][::-1],
+                "opacity": blob[cp + 8],
+                "visible": not bool(blob[cp + 10] & 2),
+                "chids": chids,
+                "ali": ali,
+                "pascal": _mib8_pascal(extra, tstart),
+            }
+        )
+        P = extra_end
+    return out
+
+
+def _parse_embedded_legacy(blob: bytes, width: int, height: int) -> list[LayerNode]:
+    """Fallback: reconstruct the tree from ``inul`` anchors only.
+
+    Used when the record stream is in a shape :func:`_mib8_records` cannot
+    decode.  Recovers names, sheet colour, group structure and (best effort)
+    opacity/blend -- but not masks/effects.
     """
     idx = _mib8_index(blob)
     inuls = [j for j, key, _ in idx if key == b"inul"]
     if not inuls:
         return []
-
     n = len(blob)
     recs: list[dict[str, Any]] = []
     for k, p in enumerate(inuls):
@@ -619,28 +760,90 @@ def _parse_embedded_layers(blob: bytes, width: int, height: int) -> list[LayerNo
         nch = struct.unpack_from("<I", blob, p + 12)[0] if ln >= 4 else 0
         nch = max(0, min(nch, (q - 16 - p) // 2))
         name = blob[p + 16 : p + 16 + nch * 2].decode("utf-16-le", "replace").rstrip("\x00")
-        meta = {
-            key: blob[pos + 12 : pos + 12 + blen]
-            for pos, key, blen in idx
-            if p < pos < q and blen <= 4096
-        }
+        meta = {key: blob[pos + 12 : pos + 12 + blen] for pos, key, blen in idx if p < pos < q and blen <= 4096}
         div = None
         tc = meta.get(b"tcsl")
         if tc and len(tc) >= 4:
             div = struct.unpack_from("<I", tc)[0]
         recs.append({"name": name, "div": div, "meta": meta})
 
+    def node(rec: dict[str, Any]) -> LayerNode:
+        meta = rec["meta"]
+        color = None
+        cl = meta.get(b"rlcl")
+        if cl and len(cl) >= 4:
+            color = labels.SHEET_COLORS.get(struct.unpack_from("<I", cl)[0])
+        opacity = 255
+        op = meta.get(b"rloc")
+        if op and len(op) >= 4:
+            opacity = max(0, min(255, struct.unpack_from("<I", op)[0]))
+        ty = meta.get(b"rsnl")
+        vu = meta.get(b"vruc")
+        visible = True
+        kind, klabel = "pixel", "Pixel"
+        if ty == b"ryal":
+            kind, klabel = "smartobject", "Smart Object"
+        elif vu is not None or ty == b"tnoc":
+            kind, klabel = "adjustment", "Adjustment"
+            if ty == b"tnoc":
+                visible = False
+        return LayerNode(
+            name=rec["name"],
+            kind=kind,
+            kind_label=klabel,
+            color=color,
+            opacity=opacity,
+            blend_mode=labels.blend_mode_name(_blend_key_in(vu) if vu else None),
+            visible=visible,
+            bounds=(0, 0, width, height),
+        )
+
     root = LayerNode(name="<document>", kind="group", kind_label="")
     stack: list[LayerNode] = [root]
     for rec in reversed(recs):
-        if rec["div"] == 3:  # '</Layer group>': close the innermost open folder
+        if rec["div"] == 3:
+            if len(stack) > 1:
+                stack.pop()
+            continue
+        node_r = node(rec)
+        if rec["div"] in (1, 2):
+            node_r.kind, node_r.kind_label = "group", "Folder"
+            node_r.collapsed = rec["div"] == 2
+            stack[-1].children.append(node_r)
+            stack.append(node_r)
+        else:
+            stack[-1].children.append(node_r)
+    while len(stack) > 1:
+        stack[-2].children.append(stack.pop())
+    return root.children
+
+
+def _parse_embedded_layers(blob: bytes, width: int, height: int) -> list[LayerNode]:
+    """Decode the non-standard byte-swapped layer section stored in tag 37724.
+
+    Certain writers embed, instead of the classic 37724/37725/37726 triple,
+    a whole little-endian copy of the Photoshop layer section (``MIB8``
+    blocks).  We forward-decode that record stream precisely (:func:`_mib8_
+    records`), recovering names, blend, opacity, visibility, masks, colours,
+    adjustment kind and effects, then rebuild the top-down tree from the
+    section-divider markers.  If the stream is in an unrecognised shape we
+    fall back to the older anchor-based best-effort pass.
+    """
+    recs = _mib8_records(blob)
+    if not recs:
+        return _parse_embedded_legacy(blob, width, height)
+    root = LayerNode(name="<document>", kind="group", kind_label="")
+    stack: list[LayerNode] = [root]
+    for rec in reversed(recs):
+        div = _rec_divider(rec)
+        if div == 3:  # '</Layer group>' end divider: close innermost folder
             if len(stack) > 1:
                 stack.pop()
             continue
         node = _embedded_node(rec, width, height)
-        if rec["div"] in (1, 2):  # named folder start
+        if div in (1, 2):  # named folder start
             node.kind, node.kind_label = "group", "Folder"
-            node.collapsed = rec["div"] == 2
+            node.collapsed = div == 2
             stack[-1].children.append(node)
             stack.append(node)
         else:
@@ -711,7 +914,7 @@ def _parse_tiff_body(
             doc.warnings.append("embedded layer block present but no layers could be read")
         else:
             doc.warnings.append(
-                "non-standard embedded layer block (best-effort metadata)"
+                "non-standard byte-swapped embedded Photoshop layer block"
             )
         return doc
 

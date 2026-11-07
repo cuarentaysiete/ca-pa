@@ -219,32 +219,37 @@ def _flat(nodes, depth=0):
     return out
 
 
-@pytest.mark.skipif(not os.path.isdir(REAL_SAMPLES), reason="reference samples not present")
+@pytest.mark.skipif(
+    not all(
+        os.path.isfile(os.path.join(REAL_SAMPLES, f))
+        for f in (
+            "layered_PSD.psd",
+            "layered_TIFF-compression.tif",
+            "layered_TIFF-no_compression.tif",
+        )
+    ),
+    reason="reference samples not present",
+)
 def test_real_tiff_matches_psd_reference():
-    psd = _flat(parse_file(os.path.join(REAL_SAMPLES, "layered_PSD.psd")).layers)
+    """The legacy byte-swapped MIB8 TIFF must reproduce the PSD *exactly*.
+
+    The exporter keeps every field; ca-pa recovers them by normalising the
+    ``MIB8`` record stream (little-endian integers, reversed 4-byte tag/blend
+    keys) back to standard PSD form.  Name, nesting, kind, colour, visibility,
+    opacity, blend mode, alpha/vector masks and effects must all match the PSD
+    field for field, for both the compressed and the uncompressed variant.
+    """
+    psd = _flat_full(parse_file(os.path.join(REAL_SAMPLES, "layered_PSD.psd")).layers)
+    # Sanity: this reference genuinely exercises the previously-broken fields.
+    assert any(r[1] == "CC" and r[5] == 204 and r[6] == "Color" for r in psd)      # 80% / Color
+    assert any(r[1] == "lighten" and r[5] == 128 for r in psd)                       # a 50% lighten
+    assert any(r[1] == "EYE HELP" and not r[4] for r in psd)                          # hidden group
+    assert any(r[1] == "Hue/Saturation 3" and r[6] == "Saturation" and r[7] for r in psd)
     for tif in ("layered_TIFF-compression.tif", "layered_TIFF-no_compression.tif"):
-        tiff = _flat(parse_file(os.path.join(REAL_SAMPLES, tif)).layers)
-        assert len(psd) == len(tiff), tif
-        # Names and nesting (the hierarchy) must match exactly.
-        assert [x[:2] for x in psd] == [x[:2] for x in tiff], tif
-        # Colours (sheet colour + folder inheritance) must match exactly.
-        assert [x[3] for x in psd] == [x[3] for x in tiff], tif
-        # The exporter drops a few markers; everything else must match.
-        losses = {
-            "EYE HELP": {"visible"},          # hidden-group flag lost
-            "Hue/Saturation 3": {"blend"},    # 'sat ' key not embedded
-            "color grading 1": {"kind"},      # adjustment marker dropped
-            "CC": {"opacity", "blend"},       # 204/Color stored nowhere findable
-            "darken": {"kind"},               # adjustment marker dropped
-            "lighten": {"opacity"},           # 128 stored nowhere findable
-        }
-        fields = {2: "kind", 4: "visible", 5: "opacity", 6: "blend"}
-        for ref, got in zip(psd, tiff):
-            allow = losses.get(ref[1], set())
-            for idx, fname in fields.items():
-                if fname in allow:
-                    continue
-                assert ref[idx] == got[idx], (tif, ref[1], fname, ref[idx], got[idx])
+        got = _flat_full(parse_file(os.path.join(REAL_SAMPLES, tif)).layers)
+        assert len(got) == len(psd), tif
+        for ref, g in zip(psd, got):
+            assert ref == g, (tif, ref[1], ref, g)
 
 
 def _flat_full(nodes, depth=0):
