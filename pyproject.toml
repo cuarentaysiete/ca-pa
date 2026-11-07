@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ca-pa"
-version = "0.1.1"
+version = "0.1.2"
 description = "Lightweight macOS app to inspect the layer structure of large layered TIFF/PSD files without loading pixels"
 readme = "README.md"
 requires-python = ">=3.10"

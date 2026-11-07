@@ -133,7 +133,11 @@ committed; `.gitignore` excludes `*.psd/psb/tif/tiff` and `samples/`.
 - Commit + push; then create and push an annotated `vX.Y.Z` tag — that triggers
   `.github/workflows/build.yml`, which runs the tests, builds `ca-pa.app` on an
   Apple Silicon runner and publishes `ca-pa-macos-arm64.zip`.
-- The Intel (x86_64) leg is intentionally parked until a macOS runner image ships
-  a matching interpreter.
+- The build matrix has an **arm64** leg and an **x86_64** leg (Rosetta 2).  The
+  x86_64 leg does **not** use `actions/setup-python` (current runner images no
+  longer resolve an `x86_64` 3.11); it downloads a pinned python-build-standalone
+  CPython 3.11 x86_64 tarball instead — keep that URL/version working if you
+  bump it.
+- Both zips are attached to the release; the release body must list them both.
 - **Do not build or publish a binary/tag unless explicitly asked.** Fix and test
   first; releasing is a separate, requested step.

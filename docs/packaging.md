@@ -51,14 +51,16 @@ matrix (currently a single leg):
 | runner | architecture | artifact / release asset |
 |---|---|---|
 | `macos-latest` | Apple Silicon (arm64, native) | `ca-pa-macos-arm64.zip` |
-| `macos-latest` | Intel (x86_64, via Rosetta 2) | *prepared, disabled* |
+| `macos-latest` | Intel (x86_64, via Rosetta 2) | `ca-pa-macos-intel.zip` |
 
-The Intel leg would ask `actions/setup-python` for an `x86_64` interpreter
-running under Rosetta; PyInstaller then bundles exactly that, yielding a
-genuine Intel `.app`.  It is disabled for now because the current runner
-images don't ship a Python 3.11 x86_64 build the action accepts — the leg
-is fully written (see the matrix comment) and only needs a working
-interpreter pin.  This also keeps the workflow independent of the scarce
+The Intel leg runs under Rosetta 2.  It does **not** rely on
+`actions/setup-python` for the interpreter — the current runner images no
+longer resolve an `x86_64` Python through that action — and instead
+downloads a pinned python-build-standalone CPython 3.11 x86_64 tarball,
+extracts it, and builds the venv from it.  PyInstaller then bundles
+exactly that x86_64 interpreter, yielding a genuine Intel `.app` that also
+runs on Apple Silicon via Rosetta.  Keeping both legs on the one
+`macos-latest` runner also keeps the workflow independent of the scarce
 `macos-13` Intel runners.
 
 A final `release` job collects both zips and, on a `v*` tag push, publishes
