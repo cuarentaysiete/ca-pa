@@ -56,7 +56,8 @@ def test_psd_order_and_count(samples):
         "Folder A",
         "Background",
     ]
-    assert d.layer_count() == 7  # 5 top + 2 inside the folder
+    assert d.layer_count() == 6  # folders do not count as layers
+    assert d.folder_count() == 1  # 5 top + 2 inside the folder, minus the folder itself
 
 
 def test_psd_folder_children(samples):
@@ -138,7 +139,8 @@ def test_real_psd():
     names = [l.name for l in d.layers]
     assert "RETOUCH" in names
     assert any(l.kind == "group" for l in d.layers)
-    assert d.layer_count() >= 20
+    assert d.layer_count() == 18
+    assert d.folder_count() == 8
 
 
 @pytest.mark.skipif(not os.path.isdir(REAL_SAMPLES), reason="reference samples not present")
@@ -149,7 +151,8 @@ def test_real_tiff_mib8():
     names = [l.name for l in d.layers]
     assert "RETOUCH" in names
     assert any(l.kind == "group" for l in d.layers)
-    assert d.layer_count() >= 20
+    assert d.layer_count() == 18
+    assert d.folder_count() == 8
 
 
 # --------------------------------------------------------------------------
@@ -291,13 +294,20 @@ def test_real_sample2_tif_matches_psd_reference():
     blends, masks and effects.  The PSD is the reference; both the TIFF and the
     PSB must match it field for field.
     """
-    psd = _flat_full(parse_file(os.path.join(REAL_SAMPLES, "sample2.psd")).layers)
+    ref_doc = parse_file(os.path.join(REAL_SAMPLES, "sample2.psd"))
+    psd = _flat_full(ref_doc.layers)
     assert len(psd) > 100  # the real reference is a large document
     for other in ("sample2.tif", "sample2.psb"):
-        got = _flat_full(parse_file(os.path.join(REAL_SAMPLES, other)).layers)
+        got_doc = parse_file(os.path.join(REAL_SAMPLES, other))
+        got = _flat_full(got_doc.layers)
         assert len(got) == len(psd), other
         for ref, g in zip(psd, got):
             assert ref == g, (other, ref[1], ref, g)
+        # layers and folders are counted separately, and must agree too
+        assert (got_doc.layer_count(), got_doc.folder_count()) == (
+            ref_doc.layer_count(),
+            ref_doc.folder_count(),
+        ), other
 
 
 def test_color_inheritance():

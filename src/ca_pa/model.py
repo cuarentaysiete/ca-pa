@@ -92,11 +92,34 @@ class DocumentInfo:
     def is_flat(self) -> bool:
         return self.flat
 
-    def layer_count(self) -> int:
-        total = 0
+    def _counts(self) -> tuple[int, int]:
+        """(layer_count, folder_count) over the whole tree.
+
+        Folders are *containers*, not layers: they are counted separately so
+        a document is described as, e.g., "156 layers, 7 folders".
+        """
+        layers = folders = 0
+
+        def walk(node: LayerNode) -> None:
+            nonlocal layers, folders
+            if node.is_group:
+                folders += 1
+            else:
+                layers += 1
+            for child in node.children:
+                walk(child)
+
         for layer in self.layers:
-            total += 1 + layer._count_descendants()
-        return total
+            walk(layer)
+        return layers, folders
+
+    def layer_count(self) -> int:
+        """Number of *layers* (folders are not layers)."""
+        return self._counts()[0]
+
+    def folder_count(self) -> int:
+        """Number of folders (groups) in the document."""
+        return self._counts()[1]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,6 +132,8 @@ class DocumentInfo:
             "colorMode": self.color_mode,
             "channels": self.channels,
             "hasAlpha": self.has_alpha,
+            "layerCount": self.layer_count(),
+            "folderCount": self.folder_count(),
             "layers": [l.to_dict() for l in self.layers],
             "warnings": list(self.warnings),
             "error": self.error,

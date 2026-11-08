@@ -32,7 +32,7 @@ def _text_main(argv: list[str]) -> int:
             print(doc.to_json())
             continue
         print(
-            "%s  %dx%d %s-bit %s %d layers (%.1f MB)"
+            "%s  %dx%d %s-bit %s %d layer%s (%d folder%s) (%.1f MB)"
             % (
                 doc.path,
                 doc.width,
@@ -40,6 +40,9 @@ def _text_main(argv: list[str]) -> int:
                 doc.bit_depth,
                 doc.color_mode,
                 doc.layer_count(),
+                "" if doc.layer_count() == 1 else "s",
+                doc.folder_count(),
+                "" if doc.folder_count() == 1 else "s",
                 doc.size_bytes / 1e6,
             )
         )

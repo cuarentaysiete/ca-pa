@@ -119,13 +119,34 @@ committed; `.gitignore` excludes `*.psd/psb/tif/tiff` and `samples/`.
   verify: `grep -c $'\r' <file>` must print `0`.
 - **Do not recurse naively over parsed PSD/TIFF object graphs.** A plain
   recursive walk of `node.children` can explode (hundreds of millions of rows)
-  if the underlying graph shares/cycles nodes even when `doc.layer_count()` is
-  small. Use `id()`-guarded traversal or the model's own flat representation.
+  if the underlying graph shares/cycles nodes even when the document reports
+  few layers. Use `id()`-guarded traversal or the model's own flat
+  representation.
 - **`psd-tools` readers need a seekable stream.** For embedded regions, wrap the
   file window in a seekable object (`_FileWindow`) rather than a one-shot
   reader.
 - **Large-file forensics:** extract the interesting blob once to `/tmp` and work
   on that instead of re-parsing 100 MB+ files repeatedly (OOM risk).
+
+## GUI display rules
+
+These are intentional product decisions — keep them when refactoring `gui.py`:
+
+- **Colour lives in the Name cell background** — never reintroduce a Colour
+  column. The Name cell's *text* picks near-black or near-white against that
+  background (`_contrast_fg`), so it stays readable in both light and dark
+  system themes.
+- **Hidden rows** are attenuated by blending the text 55% toward its background
+  (palette-derived via `_dim_colors`), not a fixed grey — a fixed grey
+  disappears on dark swatches in dark mode.
+- **Uncoloured folders** get a neutral container fill (`#ebebf5`).
+- **Layers and folders are counted separately**: `DocumentInfo.layer_count()`
+  excludes groups, `folder_count()` is the groups.  Don't merge them.
+- Files close via the per-row ✕ button, the **Close** toolbar action, the
+  Delete key or **Close all**; a parse that finishes for an already-closed file
+  is dropped, never re-added to the sidebar.
+- The start-up splash (icon on white + “ca-pa: a layer inspector”) is
+  `gui._make_splash()` / `gui.run()`.
 
 ## Release process
 

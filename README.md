@@ -9,7 +9,7 @@ layers, with each layer's metadata. It does this **without decoding a single
 pixel**, so a multi-hundred-MB file with 30+ layers opens in a couple of
 seconds and uses a few tens of megabytes of RAM.
 
-<p align="center"><img src="docs/screenshot.png" alt="ca-pa inspecting a 26-layer layered TIFF" width="760"></p>
+<p align="center"><img src="docs/screenshot.png" alt="ca-pa inspecting a layered TIFF: 18 layers and 8 folders" width="760"></p>
 The name is a nod to *capas* (Spanish for “layers”).
 
 ---
@@ -37,13 +37,20 @@ For every **layer** (and folder):
 | **Blend** | The blend mode (Normal, Multiply, Screen, Overlay, …). |
 | **Notes** | Flags: hidden, vector mask, alpha mask, and the layer effects (drop shadow, bevel, glow, …). |
 
-Each layer's **colour** is drawn as the background of its **Name** cell instead of taking a column of its own. A layer with no colour of its own takes the colour of the closest folder above it (an explicit colour always wins), just like the Photoshop Layers panel; a folder with no colour gets a neutral fill. Rows for **hidden** layers are drawn in attenuated (greyed-out) text.
+Each layer's **colour** is drawn as the background of its **Name** cell instead of taking a column of its own. A layer with no colour of its own takes the colour of the closest folder above it (an explicit colour always wins), just like the Photoshop Layers panel; a folder with no colour gets a neutral fill. The Name cell's text automatically switches between dark and light to stay readable on any swatch, in light and dark system themes alike, and rows for **hidden** layers are drawn in attenuated (greyed-out) text.
 
-For every **document**: format, canvas size, bit depth, colour mode and the
-total layer count, plus any warnings (e.g. that a non-standard byte-swapped layer block was decoded, or that the file is flattened).
+For every **document**: format, canvas size, bit depth, colour mode, the
+**layer** and **folder** counts (folders are containers, never counted as
+layers), plus any warnings (e.g. that a non-standard byte-swapped layer block was decoded, or that the file is flattened).
 
 Files that carry **no layer information** (flattened exports) are detected and
 shown as a single merged layer with a note, rather than failing.
+
+Several files can be open at once, listed in the sidebar.  Each row has an
+✕ button that closes just that file; the **Close** toolbar button (or the
+Delete key) closes the selected one and **Close all** empties the window.
+The app opens with a short splash — the icon on white with the name *ca-pa:
+a layer inspector*.
 
 ## How it works
 
@@ -122,7 +129,8 @@ classDiagram
         +Tuple canvas_size
         +Int bit_depth
         +String colour_mode
-        +Int total_layer_count
+        +Int layer_count()
+        +Int folder_count()
         +List warnings
         +List~LayerNode~ layers
         +to_dict() dict
@@ -248,7 +256,7 @@ src/ca_pa/
     model.py        DocumentInfo / LayerNode dataclasses
     labels.py       blend modes, sheet colours, adjustments, effect names
     errors.py       ParseError
-    gui.py          the PySide6 window (sidebar + tree + status)
+    gui.py          the PySide6 window (toolbar, sidebar, tree, status, splash)
     resources/      the app icon (PNG + .icns)
 tests/
     make_samples.py synthesises PSD/TIFF files with known metadata
