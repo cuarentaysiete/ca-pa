@@ -7,7 +7,8 @@ _**ca-pa**_ is a layer inspector, a small macOS utility that opens big layered i
 the tree of folders, pixel layers, shapes, text, smart objects and adjustment
 layers, with each layer's metadata. It does this **without decoding a single
 pixel**, so a multi-hundred-MB file with 30+ layers opens in a couple of
-seconds and uses a few tens of megabytes of RAM.
+seconds and uses a few tens of megabytes of RAM.  For now it reads
+**8-bit-per-channel** files; 16- and 32-bit files are not supported yet.
 
 <p align="center"><img src="docs/screenshot.png" alt="ca-pa inspecting a layered TIFF: 18 layers and 8 folders" width="760"></p>
 The name is a nod to *capas* (Spanish for “layers”).
@@ -54,31 +55,30 @@ a layer inspector*.
 
 ```mermaid
 graph TD
-    A[Input File<br/>PSD, PSB, TIFF] --> B{Dispatcher<br/>ca_pa.parser}
-    
-    B -->|Magic Bytes: 8BPS| C[PSD / PSB Parser]
-    B -->|Magic Bytes: II* / MM*| D[TIFF Parser]
-    
-    C --> E[Read Metadata & Blocks<br/>Header, Resources, Layers]
-    C -.->|Seek Past| F[Heavy Pixel Data]
-    
-    D --> G{Layered TIFF Type}
-    G -->|Classic Photoshop| H[Read Tags:<br/>37724, 37725, 37726]
-    G -->|Byte-swapped| I[Read Tag 37724<br/>MIB8 Metadata Blocks]
-    G -->|Standard embedded| M[Read Tag 37724<br/>Layr records = PSD]
+    A["Input file<br/>PSD · PSB · layered TIFF<br/>(8-bit per channel, for now)"] --> B{"Dispatcher<br/>ca_pa.parser"}
 
-    E --> J((Data Model))
+    B -->|"magic 8BPS"| C["PSD / PSB reader<br/>psd_parser.py"]
+    B -->|"magic II* / MM*  (TIFF)"| D["TIFF reader<br/>tiff_parser.py"]
+
+    C -->|"reads header, resources<br/>and layer records"| J[("Data model<br/>DocumentInfo + LayerNode tree")]
+    C -.->|"seeks past channel data<br/>and the merged image"| F["Pixel data — never read"]
+
+    D --> G{"embedded layer format"}
+    G -->|"classic Photoshop"| H["tag 37724 (state) + tag 37725 (names)<br/>+ tag 37726 (extra info)"]
+    G -->|"byte-swapped MIB8"| I["tag 37724: a byte-swapped record stream<br/>decoded and normalised to PSD form"]
+    G -->|"standard embedded"| M["tag 37724: an ordinary 'Layr' block<br/>— records are reused by the PSD reader"]
     H --> J
     I --> J
-    M -.->|Seek Past| F
     M --> J
-    
-    J --> K[GUI Window]
-    J --> L[CLI Output<br/>Text / JSON]
-    
-    classDef skip fill:#19a0c4,stroke:#fc0,stroke-width:3px,stroke-dasharray: 5 5;
+    D -.->|"seeks past strips / tiles"| F
+
+    J --> K["GUI window<br/>gui.py"]
+    J --> L["CLI output<br/>--text / --json"]
+
+    classDef skip fill:#19a0c4,stroke:#fc0,stroke-width:2px,stroke-dasharray:5 5;
     class F skip;
 ```
+
 
 * **PSD / PSB** — the reader walks the file header, image resources and layer
   records, and **seeks past** the channel image data and the merged image. The
@@ -119,31 +119,44 @@ and `LayerNode` (one layer) — with `to_dict()`/`to_json()` for scripting.
 ```mermaid
 classDiagram
     class DocumentInfo {
+        +String path
         +String format
-        +Tuple canvas_size
+        +Int size_bytes
+        +Int width
+        +Int height
         +Int bit_depth
-        +String colour_mode
-        +Int layer_count()
-        +Int folder_count()
-        +List warnings
+        +String color_mode
+        +Int channels
+        +Bool has_alpha
+        +Bool flat
+        +List~String~ warnings
         +List~LayerNode~ layers
-        +to_dict() dict
-        +to_json() string
+        +int layer_count()
+        +int folder_count()
+        +dict to_dict()
+        +String to_json()
     }
-    
+
     class LayerNode {
         +String name
-        +String type
-        +String colour
-        +Float opacity
+        +String kind
+        +String kind_label
+        +String adjustment
+        +String color
+        +int opacity
         +String blend_mode
-        +List notes
+        +Bool visible
+        +Bool collapsed
+        +Bool has_alpha_mask
+        +Bool has_vector_mask
+        +List~String~ effects
         +List~LayerNode~ children
     }
-    
-    DocumentInfo "1" *-- "many" LayerNode : contains
-    LayerNode "1" *-- "many" LayerNode : nested folders
+
+    DocumentInfo "1" *-- "many" LayerNode : layers
+    LayerNode "1" *-- "many" LayerNode : children
 ```
+
 
 ---
 
@@ -198,47 +211,57 @@ tree with every field above), which is handy for feeding other tools.
 
 | Format | Notes |
 | ------ | ----- |
-| PSD | 8-bit and 16-bit, any colour mode. |
+| PSD | 8-bit per channel, any colour mode. |
 | PSB | Big PSD (files > 300 MB / > 30 000 px). |
 | Layered TIFF | The classic Photoshop `37724`/`37725`/`37726` triple (little- or big-endian). |
 | TIFF (byte-swapped) | The non-standard, byte-swapped embedded-PSD variant some tools write. |
 | TIFF (standard embedded) | A normal `8BIM` `Layr` block in `37724`; layer metadata matches the PSD exactly. |
 | Flat TIFF / PSD | Detected; shown as one merged layer with a note. |
 
+**Bit depth** — for now ca-pa only reads **8-bit-per-channel** files; 16- and
+32-bit files are not supported yet.
+
 ## Project layout
 
 ```mermaid
 graph LR
     subgraph Interfaces
+        RUN[run_app.py<br/>frozen entry]
         CLI[CLI<br/>__main__.py]
         GUI[PySide6 GUI<br/>gui.py]
     end
 
-    subgraph Core Parsing Logic
+    subgraph Core parsing
         DISP[Dispatcher<br/>parser.py]
-        PSD[PSD Reader<br/>psd_parser.py]
-        TIFF[TIFF Reader<br/>tiff_parser.py]
+        PSD[PSD / PSB reader<br/>psd_parser.py]
+        TIFF[TIFF reader<br/>tiff_parser.py]
     end
 
-    subgraph Data & Utilities
-        MOD[Data Model<br/>model.py]
-        LBL[Labels & Enums<br/>labels.py]
+    subgraph Data and helpers
+        MOD[Data model<br/>model.py]
+        LBL[Labels and enums<br/>labels.py]
         ERR[Exceptions<br/>errors.py]
     end
 
+    RUN --> GUI
     CLI --> DISP
+    CLI -.-> GUI
     GUI --> DISP
-    
+    GUI --> MOD
+    GUI -.-> LBL
+    GUI -.-> ERR
     DISP --> PSD
     DISP --> TIFF
+    DISP --> MOD
     DISP -.-> ERR
-    
     PSD --> MOD
     TIFF --> MOD
-    
     PSD -.-> LBL
     TIFF -.-> LBL
+    PSD -.-> ERR
+    TIFF -.-> ERR
 ```
+
 
 ```
 src/ca_pa/
