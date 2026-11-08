@@ -37,8 +37,6 @@ For every **layer** (and folder):
 | **Blend** | The blend mode (Normal, Multiply, Screen, Overlay, …). |
 | **Notes** | Flags: hidden, vector mask, alpha mask, and the layer effects (drop shadow, bevel, glow, …). |
 
-Each layer's **colour** is drawn as the background of its **Name** cell instead of taking a column of its own. A layer with no colour of its own takes the colour of the closest folder above it (an explicit colour always wins), just like the Photoshop Layers panel; a folder with no colour gets a neutral fill. The Name cell's text automatically switches between dark and light to stay readable on any swatch, in light and dark system themes alike, and rows for **hidden** layers are drawn in attenuated (greyed-out) text.
-
 For every **document**: format, canvas size, bit depth, colour mode, the
 **layer** and **folder** counts (folders are containers, never counted as
 layers), plus any warnings (e.g. that a non-standard byte-swapped layer block was decoded, or that the file is flattened).
@@ -117,10 +115,6 @@ graph TD
 The data model is two plain dataclasses — `DocumentInfo` (canvas + layer tree)
 and `LayerNode` (one layer) — with `to_dict()`/`to_json()` for scripting.
 
-* **Colour inheritance** — a layer without its own sheet colour takes the
-  colour of the closest folder above it (an explicit layer colour always wins),
-  mirroring how Photoshop displays the Layers panel. Swatches use the exact
-  tones of the project palette (see `docs/screenshot.png`).
 
 ```mermaid
 classDiagram
