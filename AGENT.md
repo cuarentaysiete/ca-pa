@@ -5,7 +5,7 @@ touching the parsers or the build.
 
 ## What ca-pa is
 
-A small macOS utility that opens big layered image files — **layered TIFF**,
+A small macOS/Windows utility that opens big layered image files — **layered TIFF**,
 **PSD**, **PSB** — and shows the *layer structure* (folders, pixel/shape/text/
 smart-object/adjustment layers) with per-layer metadata, **without decoding a
 single pixel**. A multi-hundred-MB / multi-GB file must open in a couple of
@@ -75,8 +75,8 @@ blend + alpha mask.
 src/ca_pa/        parser + model + labels + errors + PySide6 GUI
 tests/            make_samples.py (synthesises fixtures), test_parser.py, test_gui.py
 docs/             screenshot.png, packaging.md, icons
-ca-pa.spec        PyInstaller spec -> ca-pa.app
-.github/workflows/build.yml   CI: test, build arm64 .app, publish on v* tag
+ca-pa.spec        PyInstaller spec -> ca-pa.app (macOS) / ca-pa folder (Windows)
+.github/workflows/build.yml   CI: test (macOS+Windows), build all bundles, publish on v* tag
 ```
 
 ## Commands
@@ -152,13 +152,16 @@ These are intentional product decisions — keep them when refactoring `gui.py`:
 
 - Bump the version in **both** `pyproject.toml` and `src/ca_pa/__init__.py`.
 - Commit + push; then create and push an annotated `vX.Y.Z` tag — that triggers
-  `.github/workflows/build.yml`, which runs the tests, builds `ca-pa.app` on an
-  Apple Silicon runner and publishes `ca-pa-macos-arm64.zip`.
-- The build matrix has an **arm64** leg and an **x86_64** leg (Rosetta 2).  The
-  x86_64 leg does **not** use `actions/setup-python` (current runner images no
-  longer resolve an `x86_64` 3.11); it downloads a pinned python-build-standalone
-  CPython 3.11 x86_64 tarball instead — keep that URL/version working if you
-  bump it.
-- Both zips are attached to the release; the release body must list them both.
+  `.github/workflows/build.yml`, which runs the tests on macOS **and** Windows
+  and builds all three bundles.
+- The build matrix has three legs: **macos-arm64** (native) and
+  **macos-intel** (Rosetta 2) on `macos-latest`, plus **windows-x64** on
+  `windows-latest`.  The x86_64 leg does **not** use `actions/setup-python`
+  (current runner images no longer resolve an `x86_64` 3.11); it downloads a
+  pinned python-build-standalone CPython 3.11 x86_64 tarball instead — keep
+  that URL/version working if you bump it.
+- All three zips (`ca-pa-macos-arm64`, `ca-pa-macos-intel`,
+  `ca-pa-windows-x64`) are attached to the release; the release body must list
+  them all.
 - **Do not build or publish a binary/tag unless explicitly asked.** Fix and test
   first; releasing is a separate, requested step.

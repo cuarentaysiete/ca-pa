@@ -11,7 +11,7 @@ from .parser import parse_file
 from . import errors
 
 __all__ = ["parse_file", "DocumentInfo", "LayerNode", "errors"]
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 
 def main(argv: list[str] | None = None) -> int:

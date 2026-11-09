@@ -164,15 +164,21 @@ classDiagram
 
 The easiest way is a prebuilt bundle from the
 [releases](https://github.com/cuarentaysiete/ca-pa/releases) page — pick the
-zip for your chip, unzip it, and you have `ca-pa.app`:
+zip for your machine:
 
-| Your Mac has… | Download |
+| Your machine is… | Download |
 |---|---|
-| Apple Silicon (M1/M2/M3/M4, 2020+) | `ca-pa-macos-arm64.zip` |
-| Intel | `ca-pa-macos-intel.zip` (also runs on Apple Silicon via Rosetta 2) |
+| macOS, Apple Silicon (M1/M2/M3/M4, 2020+) | `ca-pa-macos-arm64.zip` → `ca-pa.app` |
+| macOS, Intel (or Apple Silicon via Rosetta 2) | `ca-pa-macos-intel.zip` → `ca-pa.app` |
+| Windows 10/11 (64-bit) | `ca-pa-windows-x64.zip` → `ca-pa/` folder |
+
+**macOS:** unzip and open `ca-pa.app`. **Windows:** unzip and run
+`ca-pa\ca-pa.exe`; if SmartScreen warns, choose *More info* → *Run anyway*
+(the builds are not code-signed).
+
 
 <details>
-<summary><b>Building from source</b> (macOS only)</summary>
+<summary><b>Building from source</b></summary>
 
 ```bash
 git clone https://github.com/cuarentaysiete/ca-pa
@@ -180,12 +186,14 @@ cd ca-pa
 python3 -m venv .venv
 .venv/bin/pip install -e ".[app]"          # app + PySide6 + psd-tools + pyinstaller
 .venv/bin/pyinstaller --clean --noconfirm ca-pa.spec
-open dist/ca-pa.app
 ```
 
-Because PyInstaller does not build across platforms, the `.app` must be built
-on macOS. See [`docs/packaging.md`](docs/packaging.md) for the full guide,
-including the optional high-resolution icon and code signing.
+On macOS this produces `dist/ca-pa.app`; on Windows, `dist/ca-pa/ca-pa.exe`.
+On Windows use `.venv\Scripts\pyinstaller` instead of `.venv/bin/pyinstaller`.
+Because PyInstaller does not build across platforms, each platform's bundle
+must be assembled on that platform (CI does exactly that on `macos-latest`
+and `windows-latest`). See [`docs/packaging.md`](docs/packaging.md) for the
+full guide, including the optional high-resolution icon and code signing.
 </details>
 
 ## Using it
@@ -305,14 +313,22 @@ CA_PA_SAMPLES=/ruta/samples .venv/bin/python -m pytest
 ## Packaging & CI
 
 A GitHub Actions workflow (`.github/workflows/build.yml`) runs the test
-suite once, then **builds `ca-pa.app` with PyInstaller** on an Apple
-Silicon runner (`macos-latest`) — because PyInstaller is not
-cross-platform, the macOS app must be assembled on macOS.  The build
-matrix has two legs on that same runner: **arm64** (native) and
-**x86_64** (Intel, under Rosetta 2; that leg installs a pinned
-python-build-standalone interpreter, since the runner images no longer
-ship an `x86_64` Python the `setup-python` action will resolve).
-Pushing a `v*` tag then publishes a single GitHub Release with both
+suite on **macOS and Windows** (headless, via the offscreen Qt platform),
+then **builds with PyInstaller** on the matching platform runners —
+PyInstaller is not cross-platform, so each bundle must be assembled where
+it will run.  The build matrix has three legs:
+
+- **macos-arm64** on `macos-latest` (native Apple Silicon);
+- **macos-intel** on the same runner under Rosetta 2, using a pinned
+  [python-build-standalone](https://github.com/astral-sh/python-build-standalone)
+  x86_64 interpreter (the runner images no longer ship one that
+  `actions/setup-python` will resolve); a `file` check confirms the
+  architecture before zipping;
+- **windows-x64** on `windows-latest`, producing the `ca-pa/` folder
+  bundle (a one-file PySide6 app would re-extract itself to `%TEMP%` on
+  every start).
+
+Pushing a `v*` tag then publishes a single GitHub Release with all three
 zips.  Manual runs are available from the *Actions* tab and keep their
 builds as run artifacts.
 

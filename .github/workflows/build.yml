@@ -1,19 +1,18 @@
-# Build and release the ca-pa macOS app.
+# Build and release ca-pa for macOS and Windows.
 #
-#   * every push to a version tag (v*)  -> tests, build the .app,
+#   * every push to a version tag (v*)  -> tests, build the app,
 #                                          one GitHub Release with the zips:
-#                                            ca-pa-macos-arm64.zip (Apple Silicon)
-#                                            ca-pa-macos-intel.zip  (Intel + Rosetta)
+#                                            ca-pa-macos-arm64.zip  (Apple Silicon)
+#                                            ca-pa-macos-intel.zip  (Intel, + Rosetta)
+#                                            ca-pa-windows-x64.zip  (Windows 10/11 x64)
 #   * "Run workflow" (manual)           -> same build, artifacts only
 #
-# The build must happen on macOS because PyInstaller is not cross-platform:
-# a Linux runner cannot produce a .app bundle.  Both legs run on the Apple
-# Silicon runner: the arm64 leg natively, the x86_64 leg under Rosetta 2.
-#
-# The x86_64 leg installs a pinned python-build-standalone CPython instead of
-# relying on actions/setup-python: the current macos runner images no longer
-# ship an x86_64 interpreter that setup-python will resolve, so the leg
-# downloads a known-good x86_64 CPython 3.11 release directly.
+# The app must be assembled on its target platform (PyInstaller does not
+# cross-compile).  All macOS legs run on the one `macos-latest` (Apple
+# Silicon) runner: arm64 natively, x86_64 under Rosetta 2 — the x86_64 leg
+# installs a pinned python-build-standalone interpreter, because the runner
+# images no longer ship an x86_64 Python that actions/setup-python will
+# resolve.  The Windows leg runs on `windows-latest`.
 name: build
 
 on:
@@ -24,41 +23,61 @@ on:
       tag:
         description: "Version tag to attach the release to"
         required: true
-        default: "v0.1.2"
+        default: "v0.1.3"
 
 permissions:
   contents: write   # let the release step create a GitHub Release
 
 jobs:
   test:
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # one OS failing must not sink the other
+      matrix:
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Install
-        run: python -m venv .venv && .venv/bin/pip install -e ".[dev,app]"
+        run: python -m pip install -e ".[dev,app]"
       - name: Test suite
-        run: .venv/bin/python -m pytest -q
+        # QT_QPA_PLATFORM=offscreen is set by tests/conftest.py, so the
+        # suite is headless on every OS.
+        run: python -m pytest -q
 
   build:
-    runs-on: macos-latest   # Apple Silicon box; the x86_64 leg runs under Rosetta 2
+    runs-on: ${{ matrix.os }}
     needs: test
     strategy:
-      fail-fast: false          # let the other arch finish even if one fails
+      fail-fast: false          # let the other builds finish even if one fails
       matrix:
-        arch: [arm64, x86_64]
+        include:
+          - os: macos-latest
+            arch: arm64
+            pyarch: arm64
+            label: macos-arm64
+          - os: macos-latest
+            arch: x86_64
+            pyarch: x86_64
+            label: macos-intel
+          - os: windows-latest
+            arch: amd64
+            pyarch: x64
+            label: windows-x64
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python (arm64)
-        if: matrix.arch == 'arm64'
+      - name: Set up Python
+        # Every leg except the macOS x86_64 one, whose interpreter does not
+        # exist in the runner image (see next step).
+        if: "!(matrix.os == 'macos-latest' && matrix.arch == 'x86_64')"
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          architecture: arm64
-      - name: Set up Python (x86_64 via Rosetta 2)
-        if: matrix.arch == 'x86_64'
+          architecture: ${{ matrix.pyarch }}
+      - name: Set up Python (x86_64 via pinned python-build-standalone)
+        if: matrix.os == 'macos-latest' && matrix.arch == 'x86_64'
         shell: bash
         run: |
           set -euo pipefail
@@ -67,37 +86,44 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pbx86"
           tar -xzf py.tar.gz -C "$RUNNER_TEMP/pbx86" --strip-components=1
           echo "$RUNNER_TEMP/pbx86/bin" >> "$GITHUB_PATH"
-          python -V
       - name: Architecture check
+        shell: bash
         run: |
           echo "python says: $(python -c 'import platform; print(platform.machine())')"
-          file "$(command -v python)"
+          file "$(command -v python)" || ls -l "$(command -v python)"
       - name: Install
-        run: python -m venv .venv && .venv/bin/pip install -e ".[app]"
-      - name: Architecture label
-        id: meta
+        shell: bash
+        run: python -m pip install -e ".[app]"
+      - name: Build with PyInstaller
+        shell: bash
+        run: python -m pyinstaller --clean --noconfirm ca-pa.spec
+      - name: Verify output
+        shell: bash
         run: |
-          if [[ "${{ matrix.arch }}" == "x86_64" ]]; then
-            echo "arch=intel" >> "$GITHUB_OUTPUT"
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            file dist/ca-pa.app/Contents/MacOS/ca-pa
           else
-            echo "arch=arm64" >> "$GITHUB_OUTPUT"
+            ls -lh dist/ca-pa/ca-pa.exe
           fi
-      - name: Full-resolution icon (sips + iconutil)
-        run: scripts/make_icon.sh
-      - name: Build .app with PyInstaller
-        run: .venv/bin/pyinstaller --clean --noconfirm ca-pa.spec
-      - name: Verify bundle architecture
-        run: file dist/ca-pa.app/Contents/MacOS/ca-pa
-      - name: Package
+      - name: Package (macOS)
+        if: matrix.os == 'macos-latest'
+        shell: bash
         run: |
           cd dist
-          zip -qr "ca-pa-macos-${{ steps.meta.outputs.arch }}.zip" ca-pa.app
-          ls -lh "ca-pa-macos-${{ steps.meta.outputs.arch }}.zip"
+          zip -qr "../ca-pa-${{ matrix.label }}.zip" ca-pa.app
+          ls -lh "../ca-pa-${{ matrix.label }}.zip"
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/ca-pa -DestinationPath "ca-pa-${{ matrix.label }}.zip"
+          Get-Item "ca-pa-${{ matrix.label }}.zip" | Format-Table Name, Length
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ca-pa-macos-${{ steps.meta.outputs.arch }}
-          path: dist/ca-pa-macos-${{ steps.meta.outputs.arch }}.zip
+          name: ca-pa-${{ matrix.label }}
+          path: ca-pa-${{ matrix.label }}.zip
+          if-no-files-found: error
 
   release:
     runs-on: macos-latest
@@ -113,6 +139,11 @@ jobs:
         with:
           name: ca-pa-macos-intel
           path: dist/intel
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: ca-pa-windows-x64
+          path: dist/windows
 
       # Publish a GitHub Release only for real tag pushes; manual runs keep
       # their artifacts in the run page instead.
@@ -125,18 +156,21 @@ jobs:
           files: |
             dist/arm64/ca-pa-macos-arm64.zip
             dist/intel/ca-pa-macos-intel.zip
+            dist/windows/ca-pa-windows-x64.zip
           body: |
             ca-pa — inspect the layer structure of big layered TIFF/PSD files
             without decoding the pixels.
 
             **Which file do I download?**
 
-            | Chip | File |
+            | Machine | File |
             |---|---|
             | Apple Silicon (M1/M2/M3/M4…) | `ca-pa-macos-arm64.zip` |
-            | Intel | `ca-pa-macos-intel.zip` |
+            | Intel Mac (or M-series via Rosetta 2) | `ca-pa-macos-intel.zip` |
+            | Windows 10/11 (64-bit) | `ca-pa-windows-x64.zip` |
 
-            The Intel build also runs on Apple Silicon via Rosetta 2;
-            download the arm64 zip if you have an M-series Mac.
-
-            Unzip and drag your layered files onto the window.
+            **macOS:** unzip and you have `ca-pa.app` — drag your layered
+            files onto the window.
+            **Windows:** unzip and run `ca-pa.exe`; if SmartScreen asks,
+            choose *More info* → *Run anyway* (the build is not code-signed).
+            The app also works by dropping files onto the window.
