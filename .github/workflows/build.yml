@@ -105,9 +105,6 @@ jobs:
           python -m venv .venv
           .\.venv\Scripts\python.exe -m pip install --upgrade pip
           .\.venv\Scripts\python.exe -m pip install -e ".[app]"
-      - name: Full-resolution icon (sips + iconutil)
-        if: matrix.os == 'macos-latest'
-        run: scripts/make_icon.sh
       - name: Build with PyInstaller (macOS)
         if: matrix.os != 'windows-latest'
         shell: bash

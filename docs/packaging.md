@@ -21,15 +21,11 @@ python3 -m venv .venv
 ## Icon
 
 The repo ships the icon in three forms: the source PNG, a small 32 px
-`.icns` (macOS) and a multi-size `.ico` (Windows), so the bundles already
-have working icons.  For a crisp Retina `.icns` (16–1024 px), regenerate
-it from the high-resolution PNG first:
-
-```bash
-scripts/make_icon.sh      # needs sips + iconutil (stock on macOS)
-```
-
-Skip this if the 32 px icon is good enough.
+`.icns` (macOS) and a multi-size `.ico` (Windows); the spec picks the
+right one per platform, so the bundles have working icons out of the box.
+(The `.ico` is generated from the PNG with Pillow; a crisp Retina `.icns`
+can be built the same way, or with `sips`/`iconutil` on a Mac, and
+committed in its place.)
 
 ## Build
 
