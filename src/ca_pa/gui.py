@@ -619,11 +619,13 @@ def run(files: list[str] | None = None, *, use_splash=True, on_ready=None) -> in
         app.processEvents()
         splash.finish(window)
 
-    # CI smoke hook: quit by itself shortly after the window is up, so a
-    # built bundle can be exercised headlessly in the workflow.
+    # CI smoke hook: close the window shortly after it shows, so a built
+    # bundle can be exercised headlessly in the workflow.  Going through
+    # window.close() (rather than app.quit()) exercises closeEvent — the
+    # thread-pool drain — so the process exits cleanly.
     if os.environ.get("CA_PA_SMOKE"):
         from PySide6.QtCore import QTimer
 
-        QTimer.singleShot(2000, app.quit)
+        QTimer.singleShot(2000, window.close)
 
     return app.exec()

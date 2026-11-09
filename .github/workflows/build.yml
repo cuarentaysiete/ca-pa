@@ -135,17 +135,38 @@ jobs:
         shell: bash
         run: |
           export QT_QPA_PLATFORM=offscreen CA_PA_SMOKE=1
-          timeout 120 dist/ca-pa.app/Contents/MacOS/ca-pa
-          echo "app exited $?"
+          ls -la dist/ >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+          start=$(date +%s)
+          dist/ca-pa.app/Contents/MacOS/ca-pa > smoke.log 2>&1 &
+          pid=$!
+          for _ in $(seq 1 90); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+          kill -9 "$pid" 2>/dev/null || true
+          wait "$pid"; code=$?
+          elapsed=$(( $(date +%s) - start ))
+          { echo "smoke: exit=$code elapsed=${elapsed}s"; echo '```'; tail -30 smoke.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # The app must reach the 2 s smoke timer and exit cleanly through
+          # window.close(); dying sooner means it never came up.
+          if [ "$elapsed" -lt 2 ] || [ "$code" -ne 0 ]; then
+            echo "smoke FAILED: exit=$code elapsed=${elapsed}s"
+            exit 1
+          fi
+          echo "smoke OK: exit=$code elapsed=${elapsed}s"
       - name: Smoke test the built app (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
           $env:QT_QPA_PLATFORM = "offscreen"
           $env:CA_PA_SMOKE = "1"
-          & dist\ca-pa\ca-pa.exe
-          if ($LASTEXITCODE -ne 0) { throw "ca-pa.exe exited $LASTEXITCODE" }
-          Write-Host "ca-pa.exe smoke OK"
+          Add-Content $env:GITHUB_STEP_SUMMARY (Get-ChildItem dist | ForEach-Object Name)
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          & dist\ca-pa\ca-pa.exe *> smoke.log
+          $code = $LASTEXITCODE
+          $sw.Stop()
+          $sec = [int]$sw.Elapsed.TotalSeconds
+          Add-Content $env:GITHUB_STEP_SUMMARY "smoke: exit=$code elapsed=${sec}s"
+          Get-Content smoke.log -Tail 30 | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_ }
+          if ($sec -lt 2 -or $code -ne 0) { throw "smoke FAILED: exit=$code elapsed=${sec}s" }
+          Write-Host "smoke OK: exit=$code elapsed=${sec}s"
       - name: Verify output
         shell: bash
         run: |
