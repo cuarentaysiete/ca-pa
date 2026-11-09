@@ -11,6 +11,10 @@ seconds and uses a few tens of megabytes of RAM.  For now it reads
 **8-bit-per-channel** files; 16- and 32-bit files are not supported yet.
 
 <p align="center"><img src="docs/screenshot.png" alt="ca-pa inspecting a layered TIFF: 18 layers and 8 folders" width="760"></p>
+
+<p align="center"><img src="docs/screenshot1.png" alt="ca-pa with a layered file open" width="760"></p>
+
+<p align="center"><img src="docs/screenshot2.png" alt="ca-pa, another view of the layer tree" width="760"></p>
 The name is a nod to *capas* (Spanish for “layers”).
 
 ---
