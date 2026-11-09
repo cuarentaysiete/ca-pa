@@ -2,7 +2,7 @@
 
 <h1 align="center"><i>ca-pa</i></h1>
 
-_**ca-pa**_ is a layer inspector, a small macOS utility that opens big layered image files,
+_**ca-pa**_ is a layer inspector, a small utility that opens big layered image files,
 **layered TIFF**, **PSD** and **PSB**, and shows the **layer structure**:
 the tree of folders, pixel layers, shapes, text, smart objects and adjustment
 layers, with each layer's metadata. It does this **without decoding a single
