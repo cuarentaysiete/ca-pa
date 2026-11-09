@@ -91,12 +91,48 @@ jobs:
         run: |
           echo "python says: $(python -c 'import platform; print(platform.machine())')"
           file "$(command -v python)" || ls -l "$(command -v python)"
-      - name: Install
+      - name: Create venv and install (macOS)
+        if: matrix.os != 'windows-latest'
         shell: bash
-        run: python -m pip install -e ".[app]"
-      - name: Build with PyInstaller
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -e ".[app]"
+      - name: Create venv and install (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -e ".[app]"
+      - name: Full-resolution icon (sips + iconutil)
+        if: matrix.os == 'macos-latest'
+        run: scripts/make_icon.sh
+      - name: Build with PyInstaller (macOS)
+        if: matrix.os != 'windows-latest'
         shell: bash
-        run: python -m pyinstaller --clean --noconfirm ca-pa.spec
+        run: |
+          set -euo pipefail
+          # The build log lands in the step summary so a failure is readable
+          # from the public run page (logs themselves need auth).
+          if ! .venv/bin/pyinstaller --clean --noconfirm ca-pa.spec > build.log 2>&1; then
+            { echo '## PyInstaller failed' ; echo '```'; tail -60 build.log; echo '```' ; } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          tail -5 build.log >> "$GITHUB_STEP_SUMMARY"
+      - name: Build with PyInstaller (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          try {
+            & .\.venv\Scripts\pyinstaller.exe --clean --noconfirm ca-pa.spec *>&1 | Out-File -FilePath build.log -Encoding utf8
+          } finally {
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "## PyInstaller output (tail)"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+            Get-Content build.log -Tail 60 | ForEach-Object { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $_ }
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
+          }
+          if (Test-Path dist/ca-pa/ca-pa.exe) { Write-Host "ca-pa.exe built" } else { throw "ca-pa.exe missing" }
       - name: Verify output
         shell: bash
         run: |

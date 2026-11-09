@@ -25,7 +25,7 @@ app = ["pyinstaller>=6"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-ca_pa = ["resources/*.png", "resources/*.icns"]
+ca_pa = ["resources/*.png", "resources/*.icns", "resources/*.ico"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
