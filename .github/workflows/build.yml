@@ -133,6 +133,22 @@ jobs:
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '```'
           }
           if (Test-Path dist/ca-pa/ca-pa.exe) { Write-Host "ca-pa.exe built" } else { throw "ca-pa.exe missing" }
+      - name: Smoke test the built app (macOS)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          export QT_QPA_PLATFORM=offscreen CA_PA_SMOKE=1
+          timeout 120 dist/ca-pa.app/Contents/MacOS/ca-pa
+          echo "app exited $?"
+      - name: Smoke test the built app (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          $env:CA_PA_SMOKE = "1"
+          & dist\ca-pa\ca-pa.exe
+          if ($LASTEXITCODE -ne 0) { throw "ca-pa.exe exited $LASTEXITCODE" }
+          Write-Host "ca-pa.exe smoke OK"
       - name: Verify output
         shell: bash
         run: |

@@ -75,8 +75,8 @@ blend + alpha mask.
 src/ca_pa/        parser + model + labels + errors + PySide6 GUI
 tests/            make_samples.py (synthesises fixtures), test_parser.py, test_gui.py
 docs/             screenshot.png, packaging.md, icons
-ca-pa.spec        PyInstaller spec -> ca-pa.app (macOS) / ca-pa folder (Windows)
-.github/workflows/build.yml   CI: test (macOS+Windows), build all bundles, publish on v* tag
+ca-pa.spec        PyInstaller spec -> folder bundle (ca-pa.app / ca-pa) on every platform
+.github/workflows/build.yml   CI: test + smoke (macOS+Windows), build all bundles, publish on v* tag
 ```
 
 ## Commands
@@ -145,8 +145,25 @@ These are intentional product decisions — keep them when refactoring `gui.py`:
 - Files close via the per-row ✕ button, the **Close** toolbar action, the
   Delete key or **Close all**; a parse that finishes for an already-closed file
   is dropped, never re-added to the sidebar.
-- The start-up splash (icon on white + “ca-pa: a layer inspector”) is
-  `gui._make_splash()` / `gui.run()`.
+- The start-up splash is **two-stage**.  `run_app.main()` re-launches itself
+  with `--splash-child`; that child draws a *native* window — Win32 on
+  Windows, Cocoa on macOS, via `ctypes` only, in `bootstrap.py` — **before
+  Qt is imported**, and stays up until the parent dies.  The parent kills
+  the child the moment the real window is on screen
+  (`gui.run(on_ready=...)`).  The in-window Qt splash
+  (`gui._make_splash()`) is only the *fallback* for when the child cannot
+  run (Linux, headless, `CA_PA_NO_SPLASH=1`).  The child is fully
+  best-effort: every failure exits silently 0 — never let it break the app.
+- **Import Qt only inside functions, never at module top level** in anything
+  the splash child could import (`bootstrap.py` must stay stdlib-only);
+  the child's whole job is to be up *before* Qt loads.
+- `CA_PA_SMOKE=1` makes the app quit itself ~2 s after the window shows;
+  the workflow runs the *built* bundle with it, headless
+  (`QT_QPA_PLATFORM=offscreen`), so a broken bundle fails the build.
+- The bundle is a **folder** on every platform (never one-file): a
+  one-file PySide6 app re-extracts to a temp dir on each start, and the
+  splash child — which re-runs the same executable — would pay that cost
+  twice.
 
 ## Release process
 

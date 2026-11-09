@@ -1,9 +1,13 @@
-# Building the macOS app
+# Building the app
 
-ca-pa is packaged with **PyInstaller** into a standalone `ca-pa.app` bundle.
-Because PyInstaller builds are platform-specific, the build must be done on
-**macOS** (this repo's CI/container is Linux and can produce a Linux binary,
-but not a `.app`).
+ca-pa is packaged with **PyInstaller** as a **folder bundle on every
+platform**: a real `ca-pa.app` on macOS, a `ca-pa/` folder
+(`ca-pa.exe` + `_internal/`) on Windows, the same shape on Linux.  The
+folder form is deliberate: a one-file PySide6 app would re-extract itself
+to a temp directory on every start, and the pre-Qt splash child — which
+re-runs the same executable — must not pay that cost.  Because PyInstaller
+builds are platform-specific, each bundle must be built on its own
+platform (CI does this; a Linux box can only produce the Linux binary).
 
 ## Prerequisites
 
@@ -16,9 +20,10 @@ python3 -m venv .venv
 
 ## Icon
 
-The repo ships a small 32 px `ca-pa_icon.icns`, so the bundle already has a
-working icon.  For a crisp Retina icon (16–1024 px), regenerate it from the
-high-resolution PNG first:
+The repo ships the icon in three forms: the source PNG, a small 32 px
+`.icns` (macOS) and a multi-size `.ico` (Windows), so the bundles already
+have working icons.  For a crisp Retina `.icns` (16–1024 px), regenerate
+it from the high-resolution PNG first:
 
 ```bash
 scripts/make_icon.sh      # needs sips + iconutil (stock on macOS)
@@ -35,12 +40,13 @@ Skip this if the 32 px icon is good enough.
 This produces:
 
 ```
-dist/ca-pa.app        # the standalone app
+dist/ca-pa.app        # on macOS: the standalone .app bundle
+dist/ca-pa/           # on Windows/Linux: the folder bundle (run ca-pa[.exe])
 build/                # intermediates (safe to delete)
 ```
 
-Double-click `dist/ca-pa.app` to run it, or drag layered TIFF/PSD/PSB files
-onto the window.
+Double-click `dist/ca-pa.app` (or `ca-pa\ca-pa.exe`) to run it, or drag
+layered TIFF/PSD/PSB files onto the window.
 
 ## CI builds (all platforms)
 

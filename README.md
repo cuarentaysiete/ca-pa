@@ -48,8 +48,11 @@ shown as a single merged layer with a note, rather than failing.
 Several files can be open at once, listed in the sidebar.  Each row has an
 ✕ button that closes just that file; the **Close** toolbar button (or the
 Delete key) closes the selected one and **Close all** empties the window.
-The app opens with a short splash — the icon on white with the name *ca-pa:
-a layer inspector*.
+The app opens with a splash — the icon on white with the name *ca-pa: a
+layer inspector* — visible from the very first moment of the start: a small
+child process draws a native window *before* Qt is loaded, and it is
+retired the instant the main window appears (if that child cannot run, an
+in-window Qt splash covers the wait instead).
 
 ## How it works
 
@@ -281,14 +284,17 @@ src/ca_pa/
     model.py        DocumentInfo / LayerNode dataclasses
     labels.py       blend modes, sheet colours, adjustments, effect names
     errors.py       ParseError
+    bootstrap.py    the pre-Qt native splash (child process, ctypes only)
     gui.py          the PySide6 window (toolbar, sidebar, tree, status, splash)
-    resources/      the app icon (PNG + .icns)
+    run_app.py      GUI launcher (frozen entry point; orchestrates the splash)
+    resources/      the app icon (PNG + .icns + .ico)
 tests/
     make_samples.py synthesises PSD/TIFF files with known metadata
     test_parser.py  parser + memory-bound tests
     test_gui.py     GUI smoke tests (offscreen)
-ca-pa.spec          PyInstaller specification (-> ca-pa.app)
-.github/workflows/  CI: build + release on macOS
+    test_bootstrap.py  the splash child plumbing
+ca-pa.spec          PyInstaller specification (folder bundle on every platform)
+.github/workflows/  CI: test + build + release on macOS and Windows
 ```
 
 ## Development

@@ -586,11 +586,16 @@ def _status_line(doc: DocumentInfo) -> str:
     return line
 
 
-def run(files: list[str] | None = None) -> int:
+def run(files: list[str] | None = None, *, use_splash=True, on_ready=None) -> int:
     """Create the application and window, and enter the event loop.
 
-    A short splash (icon on white + the app's name) covers the start-up.
+    ``use_splash`` may be a bool or a zero-argument callable evaluated when
+    the splash would be created (the launcher passes a live check on the
+    native pre-Qt splash child).  ``on_ready`` is called once, after the
+    main window is on screen.
     """
+    import os
+
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
@@ -598,7 +603,9 @@ def run(files: list[str] | None = None) -> int:
     if icon is not None:
         app.setWindowIcon(icon)
 
-    splash = _make_splash()
+    if callable(use_splash):
+        use_splash = use_splash()
+    splash = _make_splash() if use_splash else None
     if splash is not None:
         splash.show()
         app.processEvents()
@@ -606,7 +613,17 @@ def run(files: list[str] | None = None) -> int:
 
     window = MainWindow(files or [])
     window.show()
+    if on_ready is not None:
+        on_ready()
     if splash is not None:
         app.processEvents()
         splash.finish(window)
+
+    # CI smoke hook: quit by itself shortly after the window is up, so a
+    # built bundle can be exercised headlessly in the workflow.
+    if os.environ.get("CA_PA_SMOKE"):
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(2000, app.quit)
+
     return app.exec()

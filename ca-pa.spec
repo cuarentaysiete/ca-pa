@@ -5,9 +5,12 @@ Build (on the matching platform; CI builds macOS and Windows)::
 
     pyinstaller --clean ca-pa.spec
 
-On macOS this produces ``dist/ca-pa.app`` (a real ``.app`` bundle with the
-ca-pa icon); on Windows, ``dist/ca-pa/ca-pa.exe`` (a folder bundle with the
-ca-pa icon); the resources (icons) are bundled either way.
+A folder bundle on every platform: ``dist/ca-pa.app`` on macOS (a real
+``.app`` bundle with the ca-pa icon), ``dist/ca-pa/ca-pa.exe`` on Windows,
+``dist/ca-pa/ca-pa`` elsewhere; the resources (icons) are bundled either
+way.  Folder bundles (not single files) on purpose: a one-file PySide6 app
+re-extracts itself to a temp directory on every start, and the pre-Qt
+splash child (which re-runs the same executable) must not pay that cost.
 """
 
 import os
@@ -53,6 +56,7 @@ psd_modules = collect_submodules("psd_tools")
 
 hiddenimports = [
     "ca_pa",
+    "ca_pa.bootstrap",
     "ca_pa.gui",
     "ca_pa.parser",
     "ca_pa.psd_parser",
@@ -84,17 +88,13 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-# One single executable on macOS (wrapped in a .app) and Linux; a folder
-# bundle on Windows, where a one-file PySide6 app would re-extract itself to
-# %TEMP% on every start.
-ONEFILE = sys.platform != "win32"
-
+# Folder bundle on every platform (a one-file PySide6 app would re-extract
+# itself to a temp dir on every start — and the pre-Qt splash child, which
+# re-runs the same executable, must not pay that cost either).
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries if ONEFILE else [],
-    a.zipfiles if ONEFILE else [],
-    a.datas if ONEFILE else [],
+    [],
     [],
     name="ca-pa",
     debug=False,
@@ -104,14 +104,17 @@ exe = EXE(
     runtime_tmpdir=None,
     console=False,  # windowed app: no terminal window
     disable_windowed_traceback=False,
-    exclude_binaries=not ONEFILE,
+    exclude_binaries=True,
     icon=_icon_path(),
 )
 
 if sys.platform == "darwin":
-    # Wrap the executable in a real .app bundle.
+    # A real .app bundle: Contents/MacOS/ca-pa + Frameworks + Resources.
     app = BUNDLE(
         exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
         name="ca-pa.app",
         icon=_icon_path(),
         bundle_identifier="ai.cuarentaysiete.ca-pa",
@@ -123,8 +126,8 @@ if sys.platform == "darwin":
             "NSHighResolutionCapable": True,
         },
     )
-elif sys.platform == "win32":
-    # dist/ca-pa/ca-pa.exe + the PySide6/Qt files in the same folder.
+else:
+    # dist/ca-pa/ca-pa.exe (Windows) or dist/ca-pa/ca-pa (Linux) + files.
     coll = COLLECT(
         exe,
         a.binaries,
