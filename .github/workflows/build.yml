@@ -167,6 +167,26 @@ jobs:
           Get-Content smoke.log -Tail 30 | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_ }
           if ($sec -lt 2 -or $code -ne 0) { throw "smoke FAILED: exit=$code elapsed=${sec}s" }
           Write-Host "smoke OK: exit=$code elapsed=${sec}s"
+      - name: Publish smoke diagnostics (on failure)
+        if: failure()
+        shell: bash
+        run: |
+          set -x
+          {
+            echo "platform: ${{ matrix.os }} / ${{ matrix.arch }}"
+            echo "--- smoke.log (tail) ---"
+            [ -f smoke.log ] && tail -60 smoke.log || echo "(no smoke.log)"
+            echo "--- dist listing ---"
+            ls -R dist 2>/dev/null | head -60 || echo "(no dist/)"
+          } > ci-diag.txt
+          git config user.name "ca-pa CI"
+          git config user.email "ci@ca-pa.local"
+          git checkout --orphan ci-debug 2>/dev/null || git checkout ci-debug
+          git rm -rf . 2>/dev/null || true
+          git add ci-diag.txt
+          git commit -m "smoke diagnostics ${{ matrix.os }}/${{ matrix.arch }}" --allow-empty
+          git push -f origin ci-debug
+        continue-on-error: true
       - name: Verify output
         shell: bash
         run: |
@@ -218,7 +238,7 @@ jobs:
       # Publish a GitHub Release only for real tag pushes; manual runs keep
       # their artifacts in the run page instead.
       - name: Create release
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && !contains(github.ref_name, 'dbg')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
