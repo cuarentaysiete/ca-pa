@@ -126,8 +126,37 @@ if sys.platform == "darwin":
             "NSHighResolutionCapable": True,
         },
     )
+elif sys.platform == "win32":
+    # dist/ca-pa/ca-pa.exe + files.  A console twin (ca-pa-c) of the same
+    # build rides along for the CI smoke test — a windowed exe's output
+    # goes nowhere, so the console one is the only way to *see* a crash;
+    # the Package step removes it before zipping.
+    exe_console = EXE(
+        pyz,
+        a.scripts,
+        [],
+        [],
+        name="ca-pa-c",
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=False,
+        runtime_tmpdir=None,
+        console=True,
+        disable_windowed_traceback=False,
+        exclude_binaries=True,
+    )
+    coll = COLLECT(
+        exe,
+        exe_console,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=False,
+        name="ca-pa",
+    )
 else:
-    # dist/ca-pa/ca-pa.exe (Windows) or dist/ca-pa/ca-pa (Linux) + files.
+    # dist/ca-pa/ca-pa (Linux) + files.
     coll = COLLECT(
         exe,
         a.binaries,

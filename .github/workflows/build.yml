@@ -157,14 +157,16 @@ jobs:
         run: |
           $env:QT_QPA_PLATFORM = "offscreen"
           $env:CA_PA_SMOKE = "1"
-          Add-Content $env:GITHUB_STEP_SUMMARY (Get-ChildItem dist | ForEach-Object Name)
+          # The console twin: a windowed exe writes nothing, so ca-pa-c is
+          # the only build whose output we can actually read.
           $sw = [System.Diagnostics.Stopwatch]::StartNew()
-          & dist\ca-pa\ca-pa.exe *> smoke.log
+          & dist\ca-pa\ca-pa-c.exe *> smoke.log
           $code = $LASTEXITCODE
           $sw.Stop()
           $sec = [int]$sw.Elapsed.TotalSeconds
+          "smoke: exit=$code elapsed=${sec}s" | Out-File smoke-result.txt -Encoding utf8
           Add-Content $env:GITHUB_STEP_SUMMARY "smoke: exit=$code elapsed=${sec}s"
-          Get-Content smoke.log -Tail 30 | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_ }
+          Get-Content smoke.log -Tail 40 | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_ }
           if ($sec -lt 2 -or $code -ne 0) { throw "smoke FAILED: exit=$code elapsed=${sec}s" }
           Write-Host "smoke OK: exit=$code elapsed=${sec}s"
       - name: Publish smoke diagnostics (on failure)
@@ -174,8 +176,10 @@ jobs:
           set -x
           {
             echo "platform: ${{ matrix.os }} / ${{ matrix.arch }}"
+            echo "--- smoke result ---"
+            [ -f smoke-result.txt ] && cat smoke-result.txt || echo "(no result)"
             echo "--- smoke.log (tail) ---"
-            [ -f smoke.log ] && tail -60 smoke.log || echo "(no smoke.log)"
+            [ -s smoke.log ] && tail -60 smoke.log || echo "(smoke.log empty or missing)"
             echo "--- dist listing ---"
             ls -R dist 2>/dev/null | head -60 || echo "(no dist/)"
           } > ci-diag.txt
@@ -206,6 +210,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
+          Remove-Item dist\ca-pa\ca-pa-c.exe -ErrorAction SilentlyContinue
           Compress-Archive -Path dist/ca-pa -DestinationPath "ca-pa-${{ matrix.label }}.zip"
           Get-Item "ca-pa-${{ matrix.label }}.zip" | Format-Table Name, Length
       - name: Upload artifact
