@@ -11,18 +11,19 @@ seconds and uses a few tens of megabytes of RAM.  For now it reads
 **8-bit-per-channel** files; 16- and 32-bit files are not supported yet.
 
 <p align="center">
-    <img src="docs/screenshot.png" alt="ca-pa inspecting a layered TIFF: 18 layers and 8 folders" width="760">
-    <i>595.7 MB · 4120×5760 px · 8-bit · 66 layers · 14 folders</i>
+    <img src="docs/screenshot.png" alt="ca-pa inspecting a layered TIFF: 18 layers and 8 folders" width="760"><br>
+    <span style="font-size: 10px; font-style: italic; color: #666;">595.7 MB · 4120×5760 px · 8-bit · 66 layers · 14 folders</span>
+</p>
+
+
+<p align="center">
+    <img src="docs/screenshot1.png" alt="ca-pa with a layered file open" width="760"><br>
+    <span style="font-size: 10px; font-style: italic; color: #666;">495.1 MB · 3627×4534 px · 8-bit · 134 layers · 29 folders</span>
 </p>
 
 <p align="center">
-    <img src="docs/screenshot1.png" alt="ca-pa with a layered file open" width="760">
-    <i>495.1 MB · 3627×4534 px · 8-bit · 134 layers · 29 folders</i>
-</p>
-
-<p align="center">
-    <img src="docs/screenshot2.png" alt="ca-pa, another view of the layer tree" width="760">
-    <i>2.2 GB · 5124×7801 px · 8-bit · 18 layers · 6 folders</i>
+    <img src="docs/screenshot2.png" alt="ca-pa, another view of the layer tree" width="760"><br>
+    <span style="font-size: 10px; font-style: italic; color: #666;">2.2 GB · 5124×7801 px · 8-bit · 18 layers · 6 folders</span>
 </p>
 The name is a nod to *capas* (Spanish for “layers”).
 
