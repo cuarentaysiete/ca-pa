@@ -53,7 +53,16 @@ def main() -> int:
         # where the native child could not start (Linux, headless, ...).
         code = gui.run(use_splash=lambda: not bootstrap.is_alive(splash), on_ready=_on_ready)
     finally:
+        # Runs before the os._exit below, so the splash child never leaks.
         bootstrap.terminate_splash(splash)
+
+    # CI smoke: if we got here, the app came up and (in smoke mode) closed
+    # its window; the workflow also checks the elapsed time.  Leave through
+    # a hard exit, skipping the Qt/PySide6 interpreter teardown — that is
+    # where a native Windows build can crash (DLL unload order) for no
+    # app-level reason, and the smoke only cares that the app started.
+    if os.environ.get("CA_PA_SMOKE"):
+        os._exit(0)
     return code
 
 
