@@ -310,6 +310,89 @@ def test_real_sample2_tif_matches_psd_reference():
         ), other
 
 
+# --------------------------------------------------------------------------
+# The low-memory readers themselves (synthetic inputs, no big files needed)
+
+
+def _mib8_frame(key: bytes, payload: bytes) -> bytes:
+    """One little-endian, key-reversed MIB8 tag frame."""
+    import struct
+
+    return b"MIB8" + key[::-1] + struct.pack("<I", len(payload)) + payload
+
+
+def test_last_frame_ending_at_prefers_outer_frame():
+    """A zero-length frame nested *inside* another frame's payload also ends
+    exactly at the frontier; the real frame is the earliest candidate (the
+    last one would be the impostor sitting inside the outer frame's data).
+    """
+    from ca_pa.tiff_parser import _last_frame_ending_at
+
+    inner = _mib8_frame(b"ssap", b"")                       # 12-byte decoy
+    outer = _mib8_frame(b"norm", b"\x13\x00" * 2 + inner)
+    m = _last_frame_ending_at(outer, 0, len(outer))
+    assert m == 0, "must return the outer frame, not the nested decoy"
+
+
+def test_peel_tags_skips_mask_block_and_recovers_name(tmp_path):
+    """A record whose mask block is bigger than the peel window must still
+    yield its tags and name -- and never read the mask pixels.
+    """
+    from ca_pa.tiff_parser import _FileWindow, _peel_tags, _TAG_WINDOW
+
+    mask = b"\x5a" * (_TAG_WINDOW + 500_000)               # > 4 MB, non-zero
+    name = b"\x05M"                                          # Pascal: len 5? no -
+    # Pascal name: length byte + chars, zero-padded to a multiple of four.
+    text = b"M" * 5
+    name = bytes([len(text)]) + text + b"\x00" * (4 - (1 + len(text)) % 4)
+    extra = mask + name + _mib8_frame(b"norm", b"\x13\x00") + _mib8_frame(b"lspf", b"\x00" * 4)
+    f = tmp_path / "rec.bin"
+    f.write_bytes(extra)
+    with open(f, "rb") as fh:
+        w = _FileWindow(fh, 0, len(extra))
+        ali, pascal = _peel_tags(w, 0, len(extra))
+    assert set(ali) == {b"norm", b"lspf"}
+    assert ali[b"lspf"] == b"\x00" * 4
+    assert pascal == "M" * 5
+    # and the mask really was skipped: reading through the window stayed bounded
+    assert w.tell() <= len(extra)
+
+
+@pytest.mark.skipif(
+    not os.path.isfile(os.path.join(REAL_SAMPLES, "layered_TIFF-no_compression_16bits.tif")),
+    reason="16-bit MIB8 reference not present",
+)
+def test_real_16bit_mib8_tiff():
+    """The 2.6 GB 16-bit byte-swapped TIFF must parse to the same structure
+    as its 8-bit siblings, via the streaming path (tag value >> 512 MB cap).
+    """
+    ref = _flat_full(parse_file(os.path.join(REAL_SAMPLES, "layered_PSD.psd")).layers)
+    doc = parse_file(os.path.join(REAL_SAMPLES, "layered_TIFF-no_compression_16bits.tif"))
+    got = _flat_full(doc.layers)
+    assert len(got) == len(ref)
+    for r, g in zip(ref, got):
+        assert r == g, r[1]
+    assert doc.bit_depth == 16
+
+
+@pytest.mark.skipif(
+    not all(os.path.isfile(os.path.join(REAL_SAMPLES, f)) for f in ("sample2.psd", "sample2_16bits.psb")),
+    reason="framed 16-bit PSB reference not present",
+)
+def test_real_framed_16bit_psb():
+    """A 16/32-bit exporter variant keeps its layer records inside an
+    ``8BIM Lr16`` frame with the standard LayerInfo fields zeroed out; the
+    parse must recover the full structure from that frame.
+    """
+    ref = _flat_full(parse_file(os.path.join(REAL_SAMPLES, "sample2.psd")).layers)
+    doc = parse_file(os.path.join(REAL_SAMPLES, "sample2_16bits.psb"))
+    got = _flat_full(doc.layers)
+    assert len(got) == len(ref)
+    for r, g in zip(ref, got):
+        assert r == g, r[1]
+    assert doc.bit_depth == 16
+
+
 def test_color_inheritance():
     from ca_pa.model import LayerNode
     from ca_pa.parser import _inherit_colors

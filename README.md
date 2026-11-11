@@ -35,7 +35,9 @@ Full-featured editors load an image's pixels to show its layers. For a 1–2 GB
 layered TIFF or PSD that means gigabytes of RAM and a long wait, even when you
 only want to *see* what's in the file. ca-pa reads just the metadata — the
 header and the per-layer records — and steps straight over the pixel data, so
-it stays fast and light no matter how big or deep the file is.
+it stays fast and light no matter how big or deep the file is.  A 2.6 GB,
+16-bit, uncompressed layered TIFF opens in well under a second using only a
+few tens of megabytes of RAM; a 134-layer, ~550 MB PSD parses in ~0.2 s.
 
 Think of it as a “layer inspector” / file peeker: you open a file, glance at
 its structure and metadata, and move on, without a heavyweight editor.

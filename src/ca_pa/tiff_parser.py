@@ -369,17 +369,26 @@ class _FileWindow(io.IOBase):
 
     def seek(self, offset: int, whence: int = 0) -> int:
         if whence == 0:
-            self._pos = offset
+            pos = offset
         elif whence == 1:
-            self._pos = self._pos + offset
+            pos = self._pos + offset
         else:  # SEEK_END: measured from the end of this window
-            self._pos = (self._end - self._base) + offset
+            pos = (self._end - self._base) + offset
+        # Clamp: psd-tools readers check _remaining_bytes before reading, so
+        # a clamped position turns an over-long read into a clean short read
+        # instead of silently running past the section into the file.
+        self._pos = max(0, min(pos, self._end - self._base))
         return self._pos
 
     def read(self, size: int = -1) -> bytes:
+        total = self._end - self._base
+        if self._pos > total:
+            self._pos = total
         self._fp.seek(self._base + self._pos)
         if size < 0:
-            size = max(0, (self._end - self._base) - self._pos)
+            size = total - self._pos
+        else:
+            size = min(size, total - self._pos)
         data = self._fp.read(size)
         self._pos += len(data)
         return data
@@ -461,7 +470,7 @@ def _parse_standard_embedded(
     from psd_tools.psd.image_resources import ImageResources
     from psd_tools.psd.layer_and_mask import LayerRecords
 
-    from .psd_parser import ENCODING, build_doc_from_records
+    from .psd_parser import ENCODING, build_doc_from_records, _read_records_light
 
     width = _first_int(reader, entries.get(TAG_IMAGE_WIDTH))
     height = _first_int(reader, entries.get(TAG_IMAGE_LENGTH))
@@ -496,7 +505,7 @@ def _parse_standard_embedded(
     fp.seek(body_start)
     (count,) = struct.unpack_from(">h", fp.read(2))
     window = _FileWindow(fp, body_start + 2, size_bytes)
-    records = LayerRecords.read(window, abs(count), ENCODING, 1)
+    records = LayerRecords(_read_records_light(window, abs(count), ENCODING, 1))
 
     has_alpha = any(any(c.id == -1 for c in r.channel_info) for r in records)
     # Document-level channel count mirrors the PSD header: alpha lives in
@@ -670,15 +679,22 @@ def _tagged_blocks(extra: bytes) -> tuple[int, dict[bytes, bytes]]:
 
 
 def _mib8_pascal(extra: bytes, start: int) -> str | None:
-    """Recover the ASCII Pascal name that precedes the tagged-block run."""
-    if start >= 2 and extra[start - 1] == 0:
-        i = start - 2
-        while i >= 0 and 32 <= extra[i] < 127:
-            i -= 1
-        if i >= 0:
-            name = extra[i + 1 : start - 1]
-            if len(name) == extra[i] and name:
-                return name.decode("latin-1")
+    """Recover the Pascal name that precedes the tagged-block run at ``start``.
+
+    The name is zero-padded to a multiple of four; how many pad bytes there
+    are is not fixed (exporters vary), so skip them all first, then walk
+    back over the printable characters and check against the length byte.
+    """
+    i = start - 1
+    while i >= 0 and extra[i] == 0:
+        i -= 1
+    j = i
+    while i >= 0 and 32 <= extra[i] < 127:
+        i -= 1
+    if 0 <= i < j:
+        name = extra[i + 1 : j + 1]
+        if len(name) == extra[i]:
+            return name.decode("latin-1")
     return None
 
 
@@ -698,7 +714,7 @@ def _mib8_records(blob: bytes) -> list[dict[str, Any]]:
     start = None
     count = 0
     while j >= 0 and j + 14 <= len(blob):
-        if blob[j + 4 : j + 8] == b"ryaL":  # reversed "Layr"
+        if blob[j + 4 : j + 8] in _LAYER_INFO_KEYS:  # Layr / Lr16 / Lr32 reversed
             count = struct.unpack_from("<H", blob, j + 12)[0]
             start = j + 14
             break
@@ -739,6 +755,289 @@ def _mib8_records(blob: bytes) -> list[dict[str, Any]]:
         )
         P = extra_end
     return out
+
+
+# -- streaming MIB8 decode ----------------------------------------------------
+#
+# The byte-swapped layer section can be *huge* (it mirrors the whole layer
+# area: for a 16-bit document the per-record mask/channel blocks alone are
+# gigabytes).  The old path read the entire 37724 value into RAM first; the
+# streaming path below walks the same record layout with small reads and
+# seeks, never materialising the pixel bytes.
+
+_MIB8_LEGACY_CAP = 512 << 20  # full-blob fallback is reserved for small sections
+_TAG_WINDOW = 4 << 20         # peel window for a record's tagged blocks
+_TAG_MAX = 1 << 20            # per-tag payload read cap (bigger: key kept, payload dropped)
+
+# Reversed spellings of the layer-information frame keys.  An 8-bit document
+# keeps its layer records in a ``Layr`` frame; a 16/32-bit document keeps
+# them in ``Lr16``/``Lr32`` instead (the top-level records are empty shells
+# and the whole 16/32-bit layer area -- records plus channel data -- sits in
+# that one frame).
+_LAYER_INFO_KEYS = (b"ryaL", b"61rL", b"63rL")
+
+
+def _looks_like_embedded_head(reader: "_TIFFReader", entry) -> bool:
+    """Peek (not read) the 37724 value to detect the embedded-document marker."""
+    if entry is None:
+        return False
+    typ, count, _inline, raw = entry
+    if _entry_size(typ, count) <= 4:
+        return False  # an inline value cannot hold the 37-byte marker
+    fp = reader.fp
+    off = reader.u32(raw, 8)
+    fp.seek(off)
+    head = fp.read(64)
+    return head.lstrip(b"\r\n ")[: len(_EMBED_MARKER)] == _EMBED_MARKER
+
+
+def _scan_frames(
+    window: "_FileWindow", start: int, blob_len: int, keys: tuple[bytes, ...],
+    _chunk: int = 1 << 20, _cap: int = 128 << 20,
+) -> int | None:
+    """Byte-scan for a ``MIB8 <key>`` frame (chunked, capped).  Fallback for
+    writers whose framing the frame walk cannot follow."""
+    pos = start
+    carry = b""
+    while pos < blob_len and (pos - start) < _cap:
+        n = min(_chunk, blob_len - pos)
+        window.seek(pos)
+        data = window.read(n)
+        if len(data) < n:
+            break
+        buf = carry + data
+        base = pos - len(carry)
+        found = -1
+        i = buf.find(_MIB8)
+        while i >= 0:
+            if i + 8 <= len(buf) and buf[i + 4:i + 8] in keys:
+                found = base + i
+                break
+            i = buf.find(_MIB8, i + 1)
+        if found >= 0:
+            return found
+        carry = buf[-11:]  # a marker plus its 4-byte key can straddle a chunk
+        pos += n
+    return None
+
+
+def _next_frame_pos(window: "_FileWindow", pos: int, ln: int, blob_len: int) -> int | None:
+    """Position of the frame following one ending at ``pos + 12 + ln``.
+
+    The exporter aligns frames to a 4-byte boundary, but older/other writers
+    pad to 2 or not at all, so each of the four candidates is checked.
+    """
+    end = pos + 12 + ln
+    if end > blob_len:
+        return None
+    for pad in (0, 1, 2, 3):
+        p = end + pad
+        if p + 4 > blob_len:
+            break
+        window.seek(p)
+        if window.read(4) == _MIB8:
+            return p
+    return None
+
+
+def _find_layer_info(window: "_FileWindow", blob_len: int, start: int) -> int | None:
+    """Position of the layer-information frame (``Layr``, or ``Lr16``/``Lr32``
+    in 16/32-bit documents), or None.
+
+    Hops the MIB8 frames by their 12-byte headers -- payloads (thumbnails,
+    XMP, a gigabyte Lr16 document, ...) are seeked over, never read; falls
+    back to a capped byte scan if the framing is broken.
+    """
+    pos = start
+    while pos + 12 <= blob_len:
+        window.seek(pos)
+        hdr = window.read(12)
+        if len(hdr) < 12:
+            return None
+        if hdr[:4] != _MIB8:
+            return _scan_frames(window, pos, blob_len, _LAYER_INFO_KEYS)
+        if hdr[4:8] in _LAYER_INFO_KEYS:
+            return pos
+        (ln,) = struct.unpack_from("<I", hdr, 8)
+        if ln > blob_len:
+            return None
+        nxt = _next_frame_pos(window, pos, ln, blob_len)
+        if nxt is None:
+            return _scan_frames(window, pos + 12 + ln, blob_len, _LAYER_INFO_KEYS)
+        pos = nxt
+    return None
+
+
+def _last_frame_ending_at(chunk: bytes, base: int, frontier: int) -> int:
+    """Offset within ``chunk`` of the latest MIB8 frame whose payload ends
+    exactly at absolute ``frontier`` (``base`` = absolute offset of
+    ``chunk[0]``), or -1.
+
+    A random payload may contain the four bytes ``MIB8``; the frame's own
+    little-endian length must land exactly on the frontier and its key must
+    be printable -- real tag keys always are.
+
+    When several candidates end on the frontier (a quirk of some exporters:
+    a zero-length frame written *inside* another frame's payload), the real
+    frame is the *earliest* one -- the overlapping impostor sits deeper,
+    inside the real frame's payload.  Take the first match.
+    """
+    n = len(chunk)
+    i = 0
+    while True:
+        i = chunk.find(_MIB8, i)
+        if i < 0 or i + 12 > n:
+            return -1
+        (plen,) = struct.unpack_from("<I", chunk, i + 8)
+        if plen <= n - i - 12 and base + i + 12 + plen == frontier:
+            key = chunk[i + 4:i + 8]
+            if all(32 <= b < 127 for b in key):
+                return i
+        i += 1
+
+
+def _peel_tags(window: "_FileWindow", extra_start: int, extra_end: int) -> tuple[dict[bytes, bytes], str | None]:
+    """(tagged blocks, Pascal name) of a MIB8 record's extra region.
+
+    The extra region is ``[mask block][blending ranges][Pascal name][MIB8
+    tag frames...]``.  The mask block leads it and can be huge (it holds the
+    mask pixels), so the tags are recovered by peeling frames *backwards*
+    from the end of the region: each pass reads at most ``_TAG_WINDOW``
+    bytes, and a frame bigger than the window is located by scanning backwards
+    for its header.  The pixel bytes are seeked over, never read.
+    """
+    frames: list[tuple[bytes, bytes]] = []
+    frontier = extra_end
+    for _ in range(20000):
+        if frontier <= extra_start:
+            break
+        w = min(_TAG_WINDOW, frontier - extra_start)
+        window.seek(frontier - w)
+        chunk = window.read(w)
+        if len(chunk) < w:
+            break
+        m = _last_frame_ending_at(chunk, frontier - w, frontier)
+        if m < 0:
+            break  # frontier sits inside a non-frame region: done
+        key = chunk[m + 4:m + 8][::-1]  # MIB8 keys are stored reversed
+        (plen,) = struct.unpack_from("<I", chunk, m + 8)
+        payload = chunk[m + 12:] if plen <= _TAG_MAX else b""
+        frames.append((key, payload))
+        frontier = frontier - w + m
+
+    ali: dict[bytes, bytes] = {}
+    for key, payload in reversed(frames):  # earliest frame wins (as in _tagged_blocks)
+        ali.setdefault(key, payload)
+
+    # The Pascal name ends right before the first tag frame (or at the end of
+    # the region when the record carries no tags at all).
+    pascal = None
+    if frontier > extra_start:
+        w2 = min(512, frontier - extra_start)
+        window.seek(frontier - w2)
+        tail = window.read(w2)
+        if len(tail) == w2:
+            pascal = _mib8_pascal(tail, len(tail))
+    return ali, pascal
+
+
+def _mib8_records_stream(window: "_FileWindow", blob_len: int) -> list[dict[str, Any]]:
+    """Forward-decode the MIB8 record stream from a seekable window.
+
+    Same per-record fields as :func:`_mib8_records`, but the blob is never
+    materialised: each record contributes a header (18 B), its channel info
+    (6 B per channel), a 16-byte extra frame and the small tail of its extra
+    region; the mask/channel pixel bytes are seeked over.
+    """
+    window.seek(0)
+    head = window.read(len(_EMBED_MARKER) + 8)
+    if not head.startswith(_EMBED_MARKER):
+        return []
+    nul = 1 if head[len(_EMBED_MARKER):len(_EMBED_MARKER) + 1] == b"\x00" else 0
+    rj = _find_layer_info(window, blob_len, len(_EMBED_MARKER) + nul)
+    if rj is None:
+        return []
+    window.seek(rj + 8)
+    fdata = window.read(8)
+    if len(fdata) < 8:
+        return []
+    (frame_len,) = struct.unpack_from("<I", fdata, 0)  # bytes [8:12] of the frame header
+    window.seek(rj + 12)
+    data = window.read(2)
+    if len(data) < 2:
+        return []
+    (count,) = struct.unpack_from("<H", data, 0)
+    if not 0 < count <= 1_000_000:
+        return []
+    out: list[dict[str, Any]] = []
+    P = rj + 14
+    n = min(blob_len, rj + 12 + frame_len)  # records must stay inside their frame
+    for _ in range(count):
+        if P + 18 > n:
+            break
+        window.seek(P)
+        hdr = window.read(18)
+        if len(hdr) < 18:
+            break
+        top, left, bottom, right, nch = struct.unpack_from("<4iH", hdr, 0)
+        if not 0 <= nch <= 4096:
+            break
+        window.seek(P + 18)
+        chinfo = window.read(nch * 6)
+        if len(chinfo) < nch * 6:
+            break
+        cp = P + 18 + nch * 6
+        if cp + 16 > n:
+            break
+        window.seek(cp)
+        fhdr = window.read(16)
+        if len(fhdr) < 16 or fhdr[:4] != _MIB8:
+            break  # lost alignment: stop rather than emit garbage
+        (elen,) = struct.unpack_from("<I", fhdr, 12)
+        extra_start = cp + 16
+        extra_end = extra_start + elen
+        if elen < 0 or extra_end > n:
+            break
+        chids = [struct.unpack_from("<h", chinfo, c * 6)[0] for c in range(nch)]
+        ali, pascal = _peel_tags(window, extra_start, extra_end)
+        out.append(
+            {
+                "bounds": (left, top, right, bottom),
+                "blend_key": fhdr[4:8][::-1],
+                "opacity": fhdr[8],
+                "visible": not bool(fhdr[10] & 2),
+                "chids": chids,
+                "ali": ali,
+                "pascal": pascal,
+            }
+        )
+        P = extra_end
+    return out
+
+
+def _build_tree_from_recs(recs: list[dict[str, Any]], width: int, height: int) -> list[LayerNode]:
+    """Rebuild the top-down layer tree from decoded records via the
+    section-divider (``lsct``) markers, unbalanced ones flushed to the
+    nearest parent."""
+    root = LayerNode(name="<document>", kind="group", kind_label="")
+    stack: list[LayerNode] = [root]
+    for rec in reversed(recs):
+        div = _rec_divider(rec)
+        if div == 3:  # '</Layer group>' end divider: close innermost folder
+            if len(stack) > 1:
+                stack.pop()
+            continue
+        node = _embedded_node(rec, width, height)
+        if div in (1, 2):  # named folder start
+            node.kind, node.kind_label = "group", "Folder"
+            node.collapsed = div == 2
+            stack[-1].children.append(node)
+            stack.append(node)
+        else:
+            stack[-1].children.append(node)
+    while len(stack) > 1:  # unbalanced file: flush leftovers onto the parent
+        stack[-2].children.append(stack.pop())
+    return root.children
 
 
 def _parse_embedded_legacy(blob: bytes, width: int, height: int) -> list[LayerNode]:
@@ -832,25 +1131,36 @@ def _parse_embedded_layers(blob: bytes, width: int, height: int) -> list[LayerNo
     recs = _mib8_records(blob)
     if not recs:
         return _parse_embedded_legacy(blob, width, height)
-    root = LayerNode(name="<document>", kind="group", kind_label="")
-    stack: list[LayerNode] = [root]
-    for rec in reversed(recs):
-        div = _rec_divider(rec)
-        if div == 3:  # '</Layer group>' end divider: close innermost folder
-            if len(stack) > 1:
-                stack.pop()
-            continue
-        node = _embedded_node(rec, width, height)
-        if div in (1, 2):  # named folder start
-            node.kind, node.kind_label = "group", "Folder"
-            node.collapsed = div == 2
-            stack[-1].children.append(node)
-            stack.append(node)
-        else:
-            stack[-1].children.append(node)
-    while len(stack) > 1:  # unbalanced file: flush leftovers onto the parent
-        stack[-2].children.append(stack.pop())
-    return root.children
+    return _build_tree_from_recs(recs, width, height)
+
+
+def _parse_embedded_layers_stream(
+    reader: "_TIFFReader",
+    entries: dict[int, tuple[int, int, bytes, bytes]],
+    width: int,
+    height: int,
+) -> list[LayerNode]:
+    """Decode the byte-swapped (MIB8) layer section *from the file*.
+
+    The section is viewed through a :class:`_FileWindow` on the tag-37724
+    value and walked by :func:`_mib8_records_stream`, which never reads the
+    pixel bytes (a 16-bit document's section can be many gigabytes).  When
+    the stream walk finds nothing and the section is small enough, the old
+    in-memory path is used as a fallback.
+    """
+    entry = entries[TAG_LAYER_STATE]
+    off = _state_value_offset(reader, entry)
+    if off is None:
+        return []
+    size = _entry_size(entry[0], entry[1])
+    window = _FileWindow(reader.fp, off, off + size)
+    recs = _mib8_records_stream(window, size)
+    if not recs and size <= _MIB8_LEGACY_CAP:
+        blob = window.read(size)
+        if not _mib8_records(blob):
+            return _parse_embedded_legacy(blob, width, height)
+        recs = _mib8_records(blob)
+    return _build_tree_from_recs(recs, width, height)
 
 
 def parse_tiff(path: str) -> DocumentInfo:
@@ -887,10 +1197,10 @@ def _parse_tiff_body(
     extra_samples = tag_int(TAG_EXTRA_SAMPLES)
     has_alpha = extra_samples > 0
 
-    if _embed_kind(reader, entries) == "standard":
+    kind = _embed_kind(reader, entries)
+    if kind == "standard":
         return _parse_standard_embedded(reader, entries, path, size_bytes, warnings)
 
-    state_raw = get(TAG_LAYER_STATE)
     _resources = _parse_resources(get(TAG_IMAGE_RESOURCES) or b"")
 
     doc = DocumentInfo(
@@ -906,9 +1216,37 @@ def _parse_tiff_body(
         warnings=warnings,
     )
 
-    if state_raw is not None and _looks_like_embedded(state_raw):
-        # Non-standard: a whole byte-swapped PSD document in tag 37724.
-        doc.layers = _parse_embedded_layers(state_raw, width, height)
+    entry = entries.get(TAG_LAYER_STATE)
+    is_embedded = kind == "mib8"
+    if kind != "mib8" and entry is not None and _entry_size(entry[0], entry[1]) > 4:
+        # Cheap 64-byte peek: is this a (non-MIB8) embedded document?
+        is_embedded = _looks_like_embedded_head(reader, entry)
+
+    state_raw: bytes | None = None
+    if is_embedded and kind != "mib8":
+        size = _entry_size(entry[0], entry[1])
+        if size <= _MIB8_LEGACY_CAP:
+            state_raw = get(TAG_LAYER_STATE)  # whole blob, only for small sections
+        else:
+            doc.flat = True
+            doc.warnings.append(
+                "embedded layer block is too large to read fully; layers not shown"
+            )
+            doc.layers = [
+                LayerNode(name=os.path.basename(path), bounds=(0, 0, width, height))
+            ]
+            return doc
+    elif not is_embedded:
+        state_raw = get(TAG_LAYER_STATE)
+
+    if is_embedded:
+        # A whole byte-swapped PSD document in tag 37724.  The MIB8 framing
+        # streams from the file (pixel bytes never enter RAM); any other
+        # framing uses the small-blob in-memory path selected above.
+        if kind == "mib8":
+            doc.layers = _parse_embedded_layers_stream(reader, entries, width, height)
+        else:
+            doc.layers = _parse_embedded_layers(state_raw or b"", width, height)
         if not doc.layers:
             doc.flat = True
             doc.warnings.append("embedded layer block present but no layers could be read")

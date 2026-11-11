@@ -141,7 +141,8 @@ jobs:
           pid=$!
           for _ in $(seq 1 90); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
           kill -9 "$pid" 2>/dev/null || true
-          wait "$pid"; code=$?
+          code=0
+          wait "$pid" || code=$?
           elapsed=$(( $(date +%s) - start ))
           { echo "smoke: exit=$code elapsed=${elapsed}s"; echo '```'; tail -30 smoke.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           # The app must reach the 2 s smoke timer and exit cleanly through
@@ -203,9 +204,43 @@ jobs:
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
+          set -euo pipefail
           cd dist
-          zip -qr "../ca-pa-${{ matrix.label }}.zip" ca-pa.app
+          # PyInstaller ships the PySide6/Qt trees in BOTH Contents/Resources
+          # and Contents/Frameworks (the second is for the @rpath rewrites),
+          # and zip follows symlinks, so the naive bundle quadruples.
+          # Merge byte-identical twins (Frameworks copy -> relative symlink
+          # to the Resources copy); anything that differs is left as-is.
+          cd ca-pa.app/Contents
+          find Frameworks/PySide6 -type f 2>/dev/null | while IFS= read -r f; do
+            twin="Resources/PySide6/${f#Frameworks/PySide6/}"
+            if [ -f "$twin" ] && cmp -s "$f" "$twin"; then
+              rm "$f"
+              ln -s "$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], os.path.dirname(sys.argv[2])))' "$twin" "$f")" "$f"
+            fi
+          done || true
+          cd ../..
+          # -y: store symlinks as links (Qt's Versions/A|Current chains)
+          zip -qry "../ca-pa-${{ matrix.label }}.zip" ca-pa.app
           ls -lh "../ca-pa-${{ matrix.label }}.zip"
+          # Smoke-test the *shipped* artifact: unzip and run it offscreen,
+          # so the dedupe/symlink step is verified, not just assumed.
+          mkdir _smoke && unzip -q "../ca-pa-${{ matrix.label }}.zip" -d _smoke
+          export QT_QPA_PLATFORM=offscreen CA_PA_SMOKE=1
+          start=$(date +%s)
+          _smoke/ca-pa.app/Contents/MacOS/ca-pa > _smoke/log 2>&1 &
+          pid=$!
+          for _ in $(seq 1 90); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+          kill -9 "$pid" 2>/dev/null || true
+          code=0
+          wait "$pid" || code=$?
+          elapsed=$(( $(date +%s) - start ))
+          tail -20 _smoke/log
+          if [ "$elapsed" -lt 2 ] || [ "$code" -ne 0 ]; then
+            echo "shipped-zip smoke FAILED: exit=$code elapsed=${elapsed}s"
+            exit 1
+          fi
+          echo "shipped-zip smoke OK: exit=$code elapsed=${elapsed}s"
       - name: Package (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh

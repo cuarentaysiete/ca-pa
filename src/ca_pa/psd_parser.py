@@ -34,18 +34,32 @@ from typing import Any
 from psd_tools.constants import Tag
 from psd_tools.psd import PSD
 from psd_tools.psd.base import read_fmt
+from psd_tools.psd.bin_utils import (
+    is_readable,
+    read_exact,
+    read_padding,
+    read_pascal_string,
+)
 from psd_tools.psd.color_mode_data import ColorModeData
 from psd_tools.psd.header import FileHeader
 from psd_tools.psd.image_data import ImageData
 from psd_tools.psd.image_resources import ImageResources
 from psd_tools.psd.layer_and_mask import (
+    ChannelInfo,
     ChannelData,
     ChannelDataList,
     ChannelImageData,
     LayerAndMaskInformation,
+    LayerBlendingRanges,
+    LayerFlags,
     LayerInfo,
+    LayerRecord,
     LayerRecords,
+    MaskData,
 )
+from psd_tools.psd.tagged_blocks import TYPES, TaggedBlock, TaggedBlocks
+
+from .tiff_parser import _FileWindow, _TAG_MAX
 
 from . import labels
 from .errors import ParseError, UnsupportedFormatError
@@ -102,6 +116,198 @@ def _skip_merged_image(fp: io.BufferedIOBase) -> None:
     fp.seek(remaining)  # do not read the pixels
 
 
+# -- light record reading (pixels never enter RAM) ---------------------------
+#
+# psd-tools' ``LayerRecord.read`` materialises each record's *extra* region
+# (mask pixel data + Pascal name + tagged blocks) into one in-memory buffer.
+# For 16/32-bit layers the mask data alone is hundreds of megabytes, so a
+# large document allocates -- and the allocator often never returns --
+# several gigabytes.  Nothing downstream ever touches the mask pixels, so
+# the light reader below reads the identical fields in the identical order
+# but seeks over the pixel bytes, and caps per-block tagged payloads (a
+# smart object's embedded source file is the other classic multi-gigabyte
+# block).  On well-formed files the resulting records are field-identical
+# to psd-tools'.
+
+_TAG_MAX = 1 << 20      # most blocks are small
+_STRUCTURAL_KEYS = {b"Lr16", b"Lr32"}
+_EFFECT_KEYS = {b"lfx2"}
+
+
+def _tag_cap(key: bytes) -> int:
+    if key in _STRUCTURAL_KEYS:
+        return _TAG_MAX
+    if key in _EFFECT_KEYS:
+        return _TAG_MAX
+    return _TAG_MAX
+
+
+def _read_mask_light(fp) -> MaskData | None:
+    """Mask data block: consume the small header, seek over the pixel bytes.
+
+    Returns a bare ``MaskData`` marker when a mask with pixel data is
+    present, else ``None`` -- the same presence/absence psd-tools reports.
+    The mask rectangle, flags and parameters are not used by ca-pa.
+    """
+    (mlen,) = read_fmt("I", fp)
+    if mlen <= 0:
+        return None
+    head = min(mlen, 64)
+    fp.read(head)
+    if mlen > head:
+        fp.seek(mlen - head, 1)  # the mask's pixel data: never read
+    read_padding(fp, mlen, 1)
+    return MaskData()
+
+
+def _read_tagged_blocks_light(fp, version: int = 1, end_pos: int | None = None) -> TaggedBlocks:
+    """Tagged blocks with a per-block payload cap.
+
+    Same frame layout and typed parsing as psd-tools, but a payload above
+    its cap is seeked past and stubbed (key kept, payload emptied) so a
+    smart object's embedded source never lands in RAM.  ``end_pos`` bounds
+    the run at the end of the record's extra region.
+    """
+    items = []
+    while is_readable(fp, 8) and (end_pos is None or fp.tell() < end_pos):
+        signature = read_fmt("4s", fp)[0]
+        if signature not in (b"8BIM", b"8B64"):
+            fp.seek(-4, 1)
+            break
+        key_raw = read_fmt("4s", fp)[0]
+        try:
+            key = Tag(key_raw)
+        except ValueError:
+            key = key_raw
+        fmt = TaggedBlock._length_format(key, version)
+        (length,) = read_fmt(fmt, fp)
+        if length < 0 or length > (1 << 31):
+            raise OSError("implausible tagged block length %d" % length)
+        if length <= _tag_cap(key_raw):
+            raw = read_exact(fp, length)
+        else:
+            raw = b""  # keep the key (classification), drop the payload
+            fp.seek(length, 1)
+        read_padding(fp, length, 1)
+        data = raw
+        if raw:
+            kls = TYPES.get(key) if isinstance(key, Tag) else None
+            if kls is not None:
+                try:
+                    data = kls.frombytes(raw, version=version)
+                except Exception:
+                    data = raw  # psd-tools falls back to raw on parse failure
+        items.append((key, TaggedBlock(signature, key, data)))
+    return TaggedBlocks(items)
+
+
+def _read_record_light(fp, encoding: str, version: int) -> LayerRecord:
+    """One layer record, pixel-free.
+
+    Mirrors ``LayerRecord.read`` field for field (same formats, same
+    order), with two differences that only save memory:
+
+    * the mask block's pixel data is seeked past (see
+      :func:`_read_mask_light`);
+    * tagged-block payloads above the cap are seeked past and stubbed (see
+      :func:`_read_tagged_blocks_light`).
+
+    Raises ``OSError``/``struct.error`` on truncated or implausible data;
+    the caller stops the record loop.
+    """
+    top, left, bottom, right, nch = read_fmt("4iH", fp)
+    if not 0 <= nch <= 4096:
+        raise OSError("implausible channel count %d" % nch)
+    channel_info = [ChannelInfo.read(fp, version) for _ in range(nch)]
+    signature, blend_mode, opacity, clipping = read_fmt("4s4sBB", fp)
+    # Standard files carry ``Layr`` here.  One exporter (the same one behind
+    # the MIB8 TIFFs) frames the extra region instead, putting ``8BIM`` in
+    # the signature slot; psd-tools accepts whatever it finds, and so do we.
+    if signature not in (b"Layr", b"8BIM"):
+        raise OSError("bad layer record signature %r" % (signature,))
+    flags = LayerFlags.read(fp)
+    (extra_len,) = read_fmt("xI", fp)
+    if extra_len < 0 or extra_len > (1 << 31):
+        raise OSError("implausible layer extra length %d" % extra_len)
+    extra_start = fp.tell()
+    mask_data = _read_mask_light(fp)
+    blending_ranges = LayerBlendingRanges.read(fp)
+    name = read_pascal_string(fp, encoding, padding=4)
+    tagged_blocks = _read_tagged_blocks_light(
+        fp, version=version, end_pos=extra_start + extra_len
+    )
+    # Land exactly where psd-tools' read_length_block("xI") would: block plus
+    # its even padding, regardless of how the inner readers advanced.
+    fp.seek(extra_start + extra_len + (extra_len & 1))
+    return LayerRecord(
+        top=top,
+        left=left,
+        bottom=bottom,
+        right=right,
+        channel_info=channel_info,
+        signature=signature,
+        blend_mode=blend_mode,
+        opacity=opacity,
+        clipping=clipping,
+        flags=flags,
+        mask_data=mask_data,
+        blending_ranges=blending_ranges,
+        name=name,
+        tagged_blocks=tagged_blocks,
+    )
+
+
+def _read_records_light(fp, count: int, encoding: str, version: int) -> list[LayerRecord]:
+    """All ``count`` layer records, pixel-free (see :func:`_read_record_light`)."""
+    records: list[LayerRecord] = []
+    for _ in range(max(0, min(int(count), 1_000_000))):
+        try:
+            records.append(_read_record_light(fp, encoding, version))
+        except (OSError, ValueError, struct.error):
+            break  # truncated section: keep what parsed
+    return records
+
+
+def _framed_layer_info(fp, length_fmt: str, version: int):
+    """(count, records) of an 8BIM-framed layer info, or ``None``.
+
+    Some 16/32-bit exporters write the section's layer info as a tagged
+    frame instead of the standard LayerInfo block:
+
+        [8BIM][Lr16|Lr32][u32/u64 frame length]
+          [i16 count][records...][channel image data...]
+
+    leaving the standard LayerInfo length and count fields zero.  The
+    channel data inside the frame (gigabytes of pixels for 16/32-bit
+    documents) is seeked past, never read.
+    """
+    pos = fp.tell()
+    # The frame usually starts right here; some builds pad a couple of zero
+    # bytes first.  Scan a small window for the exact key, then commit.
+    window = fp.read(64)
+    offset = -1
+    for key in (b"Lr16", b"Lr32"):
+        for skip in (0, 2, 4, 6, 8, 10, 12, 16):
+            if window[skip:skip + 8] == b"8BIM" + key:
+                offset = skip
+                break
+        if offset >= 0:
+            break
+    if offset < 0:
+        fp.seek(pos)
+        return None
+    fp.seek(pos + offset + 8)
+    (flen,) = read_fmt(length_fmt, fp)
+    if flen < 2 or flen > (1 << 40):
+        fp.seek(pos)
+        return None
+    frame_end = fp.tell() + flen
+    count = read_fmt("h", fp)[0]
+    recs = _read_records_light(fp, abs(count), ENCODING, version)
+    fp.seek(frame_end)  # the frame's channel image data: never read
+    return count, recs
+
+
 def _load_structure(path: str):
     """Read header/resources/layer records of a PSD, skipping pixel data.
 
@@ -129,7 +335,18 @@ def _load_structure(path: str):
         else:
             read_fmt(length_fmt, fp)  # LayerInfo length (not needed to skip)
             count = read_fmt("h", fp)[0]
-            records = LayerRecords.read(fp, abs(count), ENCODING, version)
+            records = []
+            if count == 0:
+                # The 8BIM-framed 16/32-bit exporter variant: zero in the
+                # standard fields, everything inside the Lr16/Lr32 frame.
+                framed = _framed_layer_info(fp, length_fmt, version)
+                if framed is not None:
+                    count = framed[0]
+                    records = LayerRecords(framed[1])
+            elif count != 0:
+                records = LayerRecords(
+                    _read_records_light(fp, abs(count), ENCODING, version)
+                )
             if len(records) != abs(count):
                 warnings.append(
                     "layer section is truncated: declared %d layers, read %d"

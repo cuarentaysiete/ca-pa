@@ -182,3 +182,34 @@ These are intentional product decisions — keep them when refactoring `gui.py`:
   them all.
 - **Do not build or publish a binary/tag unless explicitly asked.** Fix and test
   first; releasing is a separate, requested step.
+
+## Low-memory readers (post-0.1.5 work)
+
+The readers never materialise pixel bytes, which is what makes multi-gigabyte
+files cheap:
+
+* **PSD/PSB** (`psd_parser.py`): `_read_record_light` mirrors
+  `LayerRecord.read` field-for-field but seeks over each record's mask pixel
+  block; `_read_tagged_blocks_light` caps per-block payloads
+  (`_TAG_CAP_*`, big keys kept for classification, payloads dropped).
+  Two exporter quirks are handled: the layer-record signature may say
+  `8BIM` instead of `Layr`, and one 16/32-bit exporter variant keeps the
+  whole layer info inside an `8BIM Lr16/Lr32` frame with the standard
+  LayerInfo length/count fields zeroed (`_framed_layer_info`).
+* **Classic layered TIFF** (`tiff_parser.py`): tag values are window-read
+  (`_tag_value`, 4 MB cap) — only `LayerState` is exempt because it must
+  carry the embedded records.
+* **MIB8 legacy TIFF**: sections ≤ 512 MB use the full-blob forward decoder;
+  bigger ones use the streaming walk (`_mib8_records_stream`, 1 MB chunks).
+  `_peel_tags` recovers each record's tags by peeling MIB8 frames
+  *backwards* from the end of the region, so the multi-GB mask/channel data
+  between the name and the tags is seeked past, never read.
+  `_last_frame_ending_at` returns the *first* candidate whose declared length
+  lands exactly on the frontier: a nested zero-length frame inside another
+  frame's payload also ends on the frontier and must not win.  The 16/32-bit
+  records live in `Lr16`/`Lr32` frames (`_LAYER_INFO_KEYS`).
+* `_mib8_pascal` locates the Pascal name backwards from the tagged run and
+  skips any number of trailing pad zeros.
+
+Measured RSS peaks: 8-bit PSD/TIFF set ≈ 38 MB; sample2 PSD/PSB/TIFF
+(≈550 MB files) ≈ 42–48 MB; 2.6 GB 16-bit MIB8 TIFF ≈ 37 MB.
