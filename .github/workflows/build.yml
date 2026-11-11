@@ -211,18 +211,43 @@ jobs:
           # and zip follows symlinks, so the naive bundle quadruples.
           # Merge byte-identical twins (Frameworks copy -> relative symlink
           # to the Resources copy); anything that differs is left as-is.
+          du -sh ca-pa.app
           cd ca-pa.app/Contents
-          find Frameworks/PySide6 -type f 2>/dev/null | while IFS= read -r f; do
-            twin="Resources/PySide6/${f#Frameworks/PySide6/}"
-            if [ -f "$twin" ] && cmp -s "$f" "$twin"; then
-              rm "$f"
-              ln -s "$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], os.path.dirname(sys.argv[2])))' "$twin" "$f")" "$f"
-            fi
-          done || true
+          # PyInstaller splits the PySide6 tree between Contents/Resources and
+          # Contents/Frameworks (a codesign requirement) and cross-links the
+          # halves; naive zip follows links and duplicates everything.  Merge
+          # byte-identical twins -- but only when *safe*: the twin must be a
+          # real file (a PyInstaller cross-link can point straight back at
+          # $f, which would make the comparison "pass" against itself), and
+          # the new link is verified to resolve before the original is
+          # removed, so no scenario can lose the only real copy.
+          if [ -d Frameworks/PySide6 ] && [ -d Resources/PySide6 ] \
+             && [ ! -L Frameworks/PySide6 ] && [ ! -L Resources/PySide6 ]; then
+            find Frameworks/PySide6 -type f 2>/dev/null | while IFS= read -r f; do
+              twin="Resources/PySide6/${f#Frameworks/PySide6/}"
+              [ -f "$twin" ] || continue
+              [ -L "$twin" ] && continue          # cross-link: not a real twin
+              # A linked directory *in the twin's path* can also make the twin
+              # resolve back to $f itself; the realpath comparison catches that
+              # before any byte is removed.
+              same=$(python3 -c 'import os,sys; a=os.path.realpath(sys.argv[1]); b=os.path.realpath(sys.argv[2]); print("1" if a==b else "0")' "$f" "$twin") || continue
+              [ "$same" = "1" ] && continue
+              cmp -s "$f" "$twin" || continue
+              rel=$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], os.path.dirname(sys.argv[2])))' "$twin" "$f") || continue
+              ln -s "$rel" "$f.dedup-tmp" || continue
+              if [ -f "$f.dedup-tmp" ]; then       # link resolves to a real file
+                rm "$f" && mv "$f.dedup-tmp" "$f"
+              else
+                rm -f "$f.dedup-tmp"              # dangling: keep the original
+              fi
+            done || true
+          fi
+          du -sh Frameworks/PySide6 Resources/PySide6 2>/dev/null
           cd ../..
           # -y: store symlinks as links (Qt's Versions/A|Current chains)
           zip -qry "../ca-pa-${{ matrix.label }}.zip" ca-pa.app
           ls -lh "../ca-pa-${{ matrix.label }}.zip"
+          unzip -l "../ca-pa-${{ matrix.label }}.zip" | tail -3
           # Smoke-test the *shipped* artifact: unzip and run it offscreen,
           # so the dedupe/symlink step is verified, not just assumed.
           mkdir _smoke && unzip -q "../ca-pa-${{ matrix.label }}.zip" -d _smoke
