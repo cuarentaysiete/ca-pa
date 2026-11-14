@@ -212,4 +212,33 @@ files cheap:
   skips any number of trailing pad zeros.
 
 Measured RSS peaks: 8-bit PSD/TIFF set ≈ 38 MB; sample2 PSD/PSB/TIFF
-(≈550 MB files) ≈ 42–48 MB; 2.6 GB 16-bit MIB8 TIFF ≈ 37 MB.
+(≈550 MB files) ≈ 42–48 MB; 2.6 GB 16-bit MIB8 TIFF ≈ 37 MB; synthetic
+20–25 GB standard-embedded and MIB8 TIFFs ≈ 40–48 MB, <0.2 s.
+
+### The multi-gigabyte "infinite loading" trap (fixed post-0.1.6)
+
+Field report: a 14596×9730, 49-layer uncompressed TIFF (21 GB; its crops
+and its PSB twin are fine) spun at 100 % CPU and grew past 20 GB of RAM
+forever.  Lesson encoded as code — **nothing in the TIFF path may ever be
+bounded by a user-controlled 32-bit count**:
+
+* Classic-side tag values go through `get_capped` (`_CLASSIC_STATE_MAX`,
+  64 MB): a foreign payload declared in 37724/37725/37726 is skipped with
+  a warning instead of being read into RAM.  The classic layer-state loop
+  itself is capped too (`_parse_state` builds at most 100k records).
+* `_embed_kind` peeks 43 bytes at the declared offset.  When that peek
+  finds nothing but the tag is large, `_relayout_embed_entry` does a
+  *bounded* scan (≤ 8 MB, 1 MB chunks) for the real section head behind
+  padding or a variant header and re-points the IFD entry in place; the
+  standard/MIB8 streamers then run unchanged.  Total extra I/O: a few MB.
+* Synthetic verification: a 20.9 GB standard-embedded TIFF (wrapped u32
+  counts, 79 records at full canvas) parses in ~0.15 s at ~40 MB RSS;
+  the same file with 2 MB of padding before the marker is recovered by the
+  re-layout scan; a 3 GB marker-less blob degrades to a flat document
+  instantly.
+
+Note the classic-TIFF constraint behind all of this: every IFD offset must
+fit in 32 bits, so in a 21 GB file the embedded section always sits below
+the 4.29 GB mark while the *counts* (37724 size, Layr length) wrap around
+— the readers must treat wrapped counts as untrusted hints, never as
+allocation sizes.

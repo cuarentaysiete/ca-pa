@@ -214,7 +214,10 @@ def _first_int(reader: _TIFFReader, entry, default: int = 0) -> int:
 def _parse_state(data: bytes) -> list[dict[str, Any]]:
     """37724 Layer state -> one dict per layer (24-byte records)."""
     out = []
-    for i in range(0, len(data) // 24 * 24, 24):
+    # Defensive: a real document holds a modest layer count; a foreign payload
+    # masquerading as layer state must not be expanded into millions of dicts.
+    limit = min(len(data), 24 * 100_000) // 24 * 24
+    for i in range(0, limit, 24):
         rec = data[i : i + 24]
         top, left, bottom, right = struct.unpack_from(">4i", rec, 0)
         depth, opacity = rec[16], rec[17]
@@ -768,6 +771,8 @@ def _mib8_records(blob: bytes) -> list[dict[str, Any]]:
 _MIB8_LEGACY_CAP = 512 << 20  # full-blob fallback is reserved for small sections
 _TAG_WINDOW = 4 << 20         # peel window for a record's tagged blocks
 _TAG_MAX = 1 << 20            # per-tag payload read cap (bigger: key kept, payload dropped)
+_CLASSIC_STATE_MAX = 64 << 20  # classic 37724/37725/37726 blobs are small; above this a payload is foreign and must never be materialised
+_RECOVERY_SCAN = 8 << 20       # how far past the declared offset to hunt a lost section head
 
 # Reversed spellings of the layer-information frame keys.  An 8-bit document
 # keeps its layer records in a ``Layr`` frame; a 16/32-bit document keeps
@@ -1173,6 +1178,65 @@ def parse_tiff(path: str) -> DocumentInfo:
         fp.close()
 
 
+def _relayout_embed_entry(
+    reader: _TIFFReader,
+    entries: dict[int, tuple[int, int, bytes, bytes]],
+    size_bytes: int,
+) -> bool:
+    """Re-point tag 37724 at the real section head when it is not where the
+    IFD says it is.
+
+    Some writers pad or relocate the "Adobe Photoshop Document Data Block"
+    stream relative to the declared offset.  Instead of falling through to
+    the classic (layer-state) treatment -- which would materialise a several
+    gigabyte foreign payload -- do a *bounded* scan (a few MB at most) for
+    the marker past the declared offset, or near the file head when the
+    offset is out of bounds.  On a verified ``8BIM``/``MIB8`` head the IFD
+    entry is patched in place so every downstream reader finds the section.
+    Returns True when the entry was re-pointed.
+    """
+    entry = entries.get(TAG_LAYER_STATE)
+    if entry is None:
+        return False
+    off = _state_value_offset(reader, entry)
+    fp = reader.fp
+    spans: list[tuple[int, int]] = []
+    if off is not None and 0 <= off < size_bytes:
+        spans.append((off, min(size_bytes, off + _RECOVERY_SCAN)))
+    if off is None or off < 0 or off >= size_bytes:
+        spans.append((0, min(size_bytes, _RECOVERY_SCAN)))
+    need = len(_EMBED_MARKER) + 8
+    tail = len(_EMBED_MARKER) - 1
+    for start, stop in spans:
+        pos = start
+        while pos + need <= stop:
+            chunk_end = min(stop, pos + (1 << 20))
+            fp.seek(pos)
+            buf = fp.read(chunk_end - pos)
+            if not buf:
+                break
+            i = buf.find(_EMBED_MARKER)
+            if i < 0:
+                pos = chunk_end - tail if chunk_end < stop else chunk_end
+                continue
+            cand = pos + i
+            fp.seek(cand)
+            head = fp.read(need)
+            if not head.startswith(_EMBED_MARKER):
+                pos = cand + 1
+                continue
+            after = head[len(_EMBED_MARKER):]
+            nul = 1 if after[:1] == b"\x00" else 0
+            if after[nul:nul + 4] not in (b"8BIM", _MIB8):
+                pos = cand + 1
+                continue
+            typ, count, _inline, raw = entry
+            patched = raw[:8] + struct.pack(reader.endian + "I", cand)
+            entries[TAG_LAYER_STATE] = (typ, count, patched[8:12], patched)
+            return True
+    return False
+
+
 def _parse_tiff_body(
     reader: _TIFFReader,
     entries: dict[int, tuple[int, int, bytes, bytes]],
@@ -1183,6 +1247,20 @@ def _parse_tiff_body(
 
     def get(tag: int) -> bytes | None:
         return _tag_bytes(reader, entries.get(tag), tag)
+
+    def get_capped(tag: int, cap: int = _CLASSIC_STATE_MAX) -> bytes | None:
+        """``get`` with a sanity cap: classic-side blobs must stay small."""
+        e = entries.get(tag)
+        if e is None:
+            return None
+        sz = _entry_size(e[0], e[1])
+        if sz > cap:
+            warnings.append(
+                "TIFF tag %d declares %d bytes; beyond %d, so it was skipped"
+                % (tag, sz, cap)
+            )
+            return b""
+        return _tag_bytes(reader, e, tag)
 
     def tag_int(tag: int, default: int = 0) -> int:
         return _first_int(reader, entries.get(tag), default)
@@ -1198,10 +1276,21 @@ def _parse_tiff_body(
     has_alpha = extra_samples > 0
 
     kind = _embed_kind(reader, entries)
+    if kind is None:
+        # The declared offset does not carry a recognisable section head.
+        # A large foreign blob can still hide the real section after padding
+        # or a variant header: bounded scan + re-point (reads at most a few MB).
+        entry0 = entries.get(TAG_LAYER_STATE)
+        if (
+            entry0 is not None
+            and _entry_size(entry0[0], entry0[1]) > (1 << 20)
+            and _relayout_embed_entry(reader, entries, size_bytes)
+        ):
+            kind = _embed_kind(reader, entries)
     if kind == "standard":
         return _parse_standard_embedded(reader, entries, path, size_bytes, warnings)
 
-    _resources = _parse_resources(get(TAG_IMAGE_RESOURCES) or b"")
+    _resources = _parse_resources(get_capped(TAG_IMAGE_RESOURCES) or b"")
 
     doc = DocumentInfo(
         path=path,
@@ -1237,6 +1326,20 @@ def _parse_tiff_body(
             ]
             return doc
     elif not is_embedded:
+        # Classic Layer State blobs are small (24 B per layer).  Anything
+        # bigger is a foreign payload masquerading as layer state: never
+        # materialise it (this was the multi-gigabyte hang).
+        sz = _entry_size(entry[0], entry[1]) if entry is not None else 0
+        if sz > _CLASSIC_STATE_MAX:
+            doc.flat = True
+            doc.warnings.append(
+                "layer state block is implausibly large (%d bytes); layers not shown"
+                % sz
+            )
+            doc.layers = [
+                LayerNode(name=os.path.basename(path), bounds=(0, 0, width, height))
+            ]
+            return doc
         state_raw = get(TAG_LAYER_STATE)
 
     if is_embedded:
@@ -1267,12 +1370,12 @@ def _parse_tiff_body(
 
     states = _parse_state(state_raw)
     n_layers = len(states)
-    names = _parse_names(get(TAG_LAYER_NAMES) or b"")
+    names = _parse_names(get_capped(TAG_LAYER_NAMES) or b"")
     if len(names) != n_layers:
         warnings.append(
             "layer count mismatch: %d layer states, %d layer names" % (n_layers, len(names))
         )
-    ali_blocks = _parse_ali_stream(get(TAG_ADDITIONAL_LAYER_INFO) or b"", n_layers)
+    ali_blocks = _parse_ali_stream(get_capped(TAG_ADDITIONAL_LAYER_INFO) or b"", n_layers)
     if len(ali_blocks) < n_layers:
         warnings.append("additional layer information is truncated")
 

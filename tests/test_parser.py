@@ -425,3 +425,86 @@ def test_sheet_palette_is_the_sampled_one():
         10: "#c35196",  # Magenta
         11: "#af53cc",  # Fuchsia
     }
+
+
+# ---------------------------------------------------------------------------
+# Regression: the 21 GB "infinite loading" bug reported against v0.1.6.
+# A TIFF whose 37724 payload is huge but carries no recognisable section head
+# used to be materialised whole (multi-GB allocation + an unbounded
+# layer-state loop).  It must now degrade gracefully, and an embedded section
+# hidden behind padding must still be found by the bounded re-layout scan.
+# ---------------------------------------------------------------------------
+
+
+def _classic_tif_skeleton(tmp_path, name, tag_count, blob):
+    """Minimal classic TIFF whose 37724 value points at ``blob``.
+
+    ``blob`` may be raw bytes, or an int meaning "that many zero bytes"
+    (written sparsely so tests stay cheap on disk and in RAM).
+    """
+    import struct
+
+    n_tags = 10
+    bps_off = 8 + 2 + 12 * n_tags + 4
+    blob_off = bps_off + 8
+    path = tmp_path / name
+    entries = []
+    for t, ty, c, v in [
+        (256, 3, 1, 512), (257, 3, 1, 512), (258, 3, 3, bps_off),
+        (259, 3, 1, 2), (277, 3, 1, 3), (278, 3, 1, 512),
+        (279, 4, 1, blob_off), (280, 4, 1, 3 * 512 * 512 % (1 << 32)),
+        (282, 3, 0, 0), (37724, 7, tag_count, blob_off),
+    ]:
+        entries.append(struct.pack("<HHII", t, ty, c, v))
+    with open(path, "wb") as d:
+        d.write(b"II*\x00" + struct.pack("<I", 8))
+        d.write(struct.pack("<H", n_tags) + b"".join(entries) + struct.pack("<I", 0))
+        d.seek(bps_off)
+        d.write(struct.pack("<III", 8, 8, 8))
+        d.seek(blob_off)
+        if isinstance(blob, int):  # sparse zero payload of exactly this size
+            d.seek(blob_off + blob - 1)
+            d.write(b"\x00")
+        else:
+            d.write(blob)
+    return str(path)
+
+
+@pytest.mark.skipif(not os.path.isdir(REAL_SAMPLES), reason="reference samples not present")
+def test_tiff_foreign_state_blob_is_capped(tmp_path):
+    """A giant 37724 without an embedded head must never be materialised."""
+    size = 200_000_000  # 200 MB of zeros, declared in the IFD
+    path = _classic_tif_skeleton(tmp_path, "junk.tif", size, size)
+    doc = parse_file(path)
+    assert doc.flat is True
+    assert any("implausibly large" in w for w in doc.warnings)
+
+
+@pytest.mark.skipif(not os.path.isdir(REAL_SAMPLES), reason="reference samples not present")
+def test_tiff_embedded_head_relocated_after_pad(tmp_path):
+    """A standard section hidden behind padding is still found and parsed."""
+    import ca_pa.tiff_parser as tp
+
+    src = os.path.join(REAL_SAMPLES, "sample2.tif")
+    fp, reader, entries = tp._open_tiff(src)
+    e = entries[tp.TAG_LAYER_STATE]
+    off = tp._state_value_offset(reader, e)
+    fp.seek(off)
+    chunk = fp.read(1_500_000)  # marker + 8BIM stream + every Layr record
+    fp.close()
+    pad = b"\x00" * 65_536
+    blob = pad + chunk
+    path = _classic_tif_skeleton(tmp_path, "padded.tif", len(blob) % (1 << 32), blob)
+    doc = parse_file(path)
+    assert doc.flat is False
+    assert doc.layer_count() == 134
+    assert doc.folder_count() == 29
+
+
+def test_parse_state_is_capped():
+    """Layer-state decoding cannot expand a foreign payload unboundedly."""
+    from ca_pa.tiff_parser import _parse_state
+
+    blob = b"\x00" * (24 * 200_000)  # claims two hundred thousand layers
+    states = _parse_state(blob)
+    assert len(states) <= 100_000
