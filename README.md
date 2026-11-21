@@ -70,6 +70,23 @@ child process draws a native window *before* Qt is loaded, and it is
 retired the instant the main window appears (if that child cannot run, an
 in-window Qt splash covers the wait instead).
 
+### Exporting the structure as JSON
+
+Two toolbar buttons write the parsed metadata (no pixels) to disk:
+
+* **Export JSON** — saves the *selected* file's full structure to a `.json`
+  you choose (canvas metadata + the whole layer tree, via
+  `DocumentInfo.to_dict()`).
+* **Export all JSON** — saves *every* open file as one JSON array, each entry
+  keyed by `file` and carrying that document's full `to_dict()`.
+
+### Where the file lives
+
+Below the file list, a **directory tree** shows the filesystem path of the
+selected file — the chain of folders from the volume root down to the file's
+own directory, with the file highlighted as the leaf. It refreshes whenever
+you pick another file in the sidebar.
+
 ## How it works
 
 ```mermaid

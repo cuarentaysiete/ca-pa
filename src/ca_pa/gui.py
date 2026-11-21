@@ -28,6 +28,7 @@ from PySide6.QtCore import QObject, Qt, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QColor, QIcon, QPalette, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -329,6 +330,21 @@ class MainWindow(QMainWindow):
         self._close_all_action.triggered.connect(
             lambda _checked=False: self.close_all()
         )
+        toolbar.addSeparator()
+        self._export_json_action = toolbar.addAction("Export JSON")
+        self._export_json_action.setToolTip(
+            "Export the layer structure of the selected file as JSON"
+        )
+        self._export_json_action.triggered.connect(
+            lambda _checked=False: self._export_current_json()
+        )
+        self._export_all_json_action = toolbar.addAction("Export all JSON")
+        self._export_all_json_action.setToolTip(
+            "Export the layer structure of every open file as one JSON document"
+        )
+        self._export_all_json_action.triggered.connect(
+            lambda _checked=False: self._export_all_json()
+        )
 
         self.sidebar = QListWidget()
         self.sidebar.setDragDropMode(QAbstractItemView.NoDragDrop)
@@ -354,11 +370,25 @@ class MainWindow(QMainWindow):
         self._stack.addWidget(self._empty)  # page 0: no file
         self._stack.addWidget(self.tree)  # page 1: the layer tree
 
+        # Left column: the file list on top and, below it, a directory tree
+        # showing where the selected file lives on disk.
+        self.dir_tree = QTreeWidget()
+        self.dir_tree.setColumnCount(1)
+        self.dir_tree.setHeaderHidden(True)
+        self.dir_tree.setRootIsDecorated(True)
+        self.dir_tree.setMinimumWidth(180)
+        self.dir_tree.setMinimumHeight(140)
+
+        left_pane = QSplitter(Qt.Vertical)
+        left_pane.addWidget(self.sidebar)
+        left_pane.addWidget(self.dir_tree)
+        left_pane.setSizes([400, 240])
+        self.sidebar.setMinimumWidth(180)
+
         splitter = QSplitter()
-        splitter.addWidget(self.sidebar)
+        splitter.addWidget(left_pane)
         splitter.addWidget(self._stack)
         splitter.setSizes([300, 680])
-        self.sidebar.setMinimumWidth(180)
         self.setCentralWidget(splitter)
         self._stack.setCurrentIndex(0)
 
@@ -501,6 +531,101 @@ class MainWindow(QMainWindow):
     def _on_sidebar_click(self, item: QListWidgetItem) -> None:
         self._show_current()
 
+    # -- JSON export ---------------------------------------------------------
+
+    def _export_current_json(self) -> None:
+        """Write the selected file's document to a .json of the user's choice."""
+        current = self.sidebar.currentItem()
+        path = current.data(Qt.ItemDataRole.UserRole) if current else None
+        if not path or path not in self._docs:
+            self._status.showMessage("No loaded file selected to export")
+            return
+        doc = self._docs[path]
+        default = os.path.join(
+            os.path.dirname(path), os.path.basename(path) + ".json"
+        )
+        target, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export layer structure as JSON",
+            default,
+            "JSON files (*.json)",
+        )
+        if not target:
+            return
+        try:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(doc.to_json())
+            self._status.showMessage("Exported %s" % os.path.basename(target))
+        except OSError as exc:
+            self._status.showMessage("Could not write %s: %s" % (target, exc))
+
+    def _export_all_json(self) -> None:
+        """Write every loaded document to one .json array."""
+        docs = [d for d in self._docs.values() if d is not None]
+        if not docs:
+            self._status.showMessage("No loaded files to export")
+            return
+        import json
+
+        # One JSON array holding each document's full to_dict() (canvas
+        # metadata + the whole layer tree), keyed by file for the user.
+        payload = [
+            {"file": d.path, **d.to_dict()}
+            for d in docs
+        ]
+        target, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export all open files as JSON",
+            os.path.join(os.path.expanduser("~"), "ca-pa-export.json"),
+            "JSON files (*.json)",
+        )
+        if not target:
+            return
+        try:
+            with open(target, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, indent=2, ensure_ascii=False))
+            self._status.showMessage("Exported %s" % os.path.basename(target))
+        except OSError as exc:
+            self._status.showMessage("Could not write %s: %s" % (target, exc))
+
+    # -- directory tree ------------------------------------------------------
+
+    def _update_dir_tree(self) -> None:
+        """Show the filesystem path of the selected file in ``dir_tree``."""
+        self.dir_tree.clear()
+        current = self.sidebar.currentItem()
+        path = current.data(Qt.ItemDataRole.UserRole) if current else None
+        if not path:
+            return
+        # Build the chain of QTreeWidgetItems from the volume root down to the
+        # file's directory, then highlight the file itself as a leaf.
+        full = os.path.abspath(path)
+        directory = os.path.dirname(full) or os.sep
+        chain = []
+        cur = directory
+        while True:
+            chain.append(cur)
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+        chain.reverse()
+        top = self.dir_tree.invisibleRootItem()
+        prev: QTreeWidgetItem | None = None
+        for node in chain:
+            item = QTreeWidgetItem([node])
+            if prev is None:
+                top.addChild(item)
+            else:
+                prev.addChild(item)
+            prev = item
+            item.setExpanded(True)
+        file_item = QTreeWidgetItem([os.path.basename(full)])
+        prev.addChild(file_item)
+        file_item.setSelected(True)
+        self.dir_tree.setCurrentItem(file_item)
+        self.dir_tree.scrollToItem(file_item)
+
     # -- display -------------------------------------------------------------
 
     def _show_current(self) -> None:
@@ -508,6 +633,9 @@ class MainWindow(QMainWindow):
         path = current.data(Qt.ItemDataRole.UserRole) if current else None
         self._close_action.setEnabled(path is not None)
         self._close_all_action.setEnabled(bool(self._files))
+        self._export_json_action.setEnabled(bool(path and path in self._docs))
+        self._export_all_json_action.setEnabled(bool(self._docs))
+        self._update_dir_tree()
         if path and path in self._docs:
             doc = self._docs[path]
             populate_tree(self.tree, doc)

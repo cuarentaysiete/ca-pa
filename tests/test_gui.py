@@ -214,3 +214,116 @@ def test_close_while_parsing_is_safe(qapp, samples):
     assert any(s == "loaded" for _, s in window._files if True)
     window.deleteLater()
     qapp.processEvents()
+
+
+# ---------------------------------------------------------------------------
+# New in v0.5: JSON export buttons + the selected file's directory tree.
+# ---------------------------------------------------------------------------
+
+
+def _load_sync(window: MainWindow, path: str) -> None:
+    """Synchronously load a file into the window (no worker thread)."""
+    from ca_pa.errors import ParseError
+
+    ap = os.path.abspath(path)
+    window._files.append((ap, "loading"))
+    window._refresh_sidebar()
+    try:
+        doc = parse_file(ap)
+    except ParseError as exc:
+        window._errors[ap] = str(exc)
+        window._files[-1] = (ap, "error")
+    else:
+        window._docs[ap] = doc
+        window._files[-1] = (ap, "loaded")
+    window._refresh_sidebar()
+    window._show_current()
+
+
+def test_toolbar_has_export_actions(qapp, samples):
+    window = MainWindow()
+    assert window._export_json_action is not None
+    assert window._export_all_json_action is not None
+    window.close()
+
+
+def test_dir_tree_is_present_and_empty(qapp, samples):
+    window = MainWindow()
+    # The left column hosts both the file list and a directory tree.
+    assert hasattr(window, "dir_tree")
+    assert window.dir_tree.invisibleRootItem().childCount() == 0
+    window.close()
+
+
+def test_dir_tree_populates_for_selected_file(qapp, samples):
+    window = MainWindow()
+    _load_sync(window, samples["sample.psd"])
+    # The chain from the filesystem root down to the file's directory,
+    # ending in the file itself, is present and the file is selected.
+    def texts(item):
+        out = []
+        for i in range(item.childCount()):
+            c = item.child(i)
+            out.append(c.text(0))
+            out.extend(texts(c))
+        return out
+
+    all_text = texts(window.dir_tree.invisibleRootItem())
+    assert os.path.basename(samples["sample.psd"]) in all_text
+    assert window.dir_tree.currentItem() is not None
+    assert window.dir_tree.currentItem().text(0) == os.path.basename(samples["sample.psd"])
+    window.close()
+
+
+def test_export_current_json(qapp, samples, tmp_path):
+    import json
+
+    from PySide6.QtWidgets import QFileDialog
+
+    window = MainWindow()
+    _load_sync(window, samples["sample.psd"])
+    out = str(tmp_path / "single.json")
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (out, ""))
+    window._export_current_json()
+    assert os.path.isfile(out)
+    with open(out, encoding="utf-8") as fh:
+        data = json.load(fh)
+    assert data["path"] == os.path.abspath(samples["sample.psd"])
+    assert data["layerCount"] > 0
+    window.close()
+
+
+def test_export_all_json_is_array(qapp, samples, tmp_path):
+    import json
+
+    from PySide6.QtWidgets import QFileDialog
+
+    window = MainWindow()
+    _load_sync(window, samples["sample.psd"])
+    _load_sync(window, samples["sample.tiff"])
+    out = str(tmp_path / "all.json")
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (out, ""))
+    window._export_all_json()
+    assert os.path.isfile(out)
+    with open(out, encoding="utf-8") as fh:
+        data = json.load(fh)
+    assert isinstance(data, list)
+    assert len(data) == 2
+    files = {os.path.basename(e["file"]) for e in data}
+    assert files == {os.path.basename(samples["sample.psd"]), os.path.basename(samples["sample.tiff"])}
+    window.close()
+
+
+def test_export_nothing_loaded_is_noop(qapp, samples, tmp_path):
+    import json
+
+    from PySide6.QtWidgets import QFileDialog
+
+    window = MainWindow()
+    out = str(tmp_path / "x.json")
+    QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (out, ""))
+    window._export_current_json()   # nothing selected
+    window._export_all_json()       # nothing loaded
+    assert not os.path.exists(out)  # neither wrote anything
+    assert "No loaded file" in window.statusBar().currentMessage() or "No loaded files" in window.statusBar().currentMessage()
+    window.close()

@@ -165,6 +165,27 @@ These are intentional product decisions — keep them when refactoring `gui.py`:
   splash child — which re-runs the same executable — would pay that cost
   twice.
 
+## v0.5 features
+
+Two additions on top of the v0.1.x line — nothing else changed, the app
+otherwise behaves exactly as before:
+
+* **JSON export.** Two toolbar actions: *Export JSON* (the selected file's
+  `DocumentInfo.to_dict()` to a `.json`) and *Export all JSON* (one array
+  with every loaded document, each keyed by `file`).  Both use
+  `QFileDialog.getSaveFileName`; a no-op with a status message when there is
+  nothing loaded.
+* **Directory tree of the selected file.** The left column now carries, under
+  the file list, a `QTreeWidget` (`window.dir_tree`) in a vertical splitter.
+  It renders the filesystem chain from the volume root down to the file's own
+  directory and highlights the file as the selected leaf.  `_update_dir_tree()`
+  rebuilds it from the sidebar selection inside `_show_current()`, so it
+  follows the user as they switch files.  Keep `window.sidebar` a plain
+  `QListWidget`: the tests count its rows.
+
+Both are exercised by `tests/test_gui.py` (six new tests).  No reader
+changes; low-memory behaviour is unchanged.
+
 ## Release process
 
 - Bump the version in **both** `pyproject.toml` and `src/ca_pa/__init__.py`.
