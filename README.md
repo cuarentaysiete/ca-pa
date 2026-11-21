@@ -26,6 +26,7 @@ seconds and uses a few tens of megabytes of RAM.  For now it reads
 </p>
 
 <p align="center">
+    <span style="font-size: 0.8em !important; font-style: italic; color: #666;">▼ 6.5 MB · 1024×1024 px · 16-bit · 11 layers · 2 folders</span><br>
     <img src="docs/screenshot4.png" alt="ca-pa: JSON export and the file's directory tree" width="760">
 </p>
 The name is a nod to *capas* (Spanish for “layers”).
