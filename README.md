@@ -2,6 +2,12 @@
 
 <h1 align="center"><i>ca-pa</i></h1>
 
+<p align="center">
+  <img src="https://github.com/cuarentaysiete/ca-pa/actions/workflows/build.yml/badge.svg" alt="build">
+  <img src="https://img.shields.io/badge/python-3.10%20%2B-blue" alt="python">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
+</p>
+
 _**ca-pa**_ is a layer inspector, a small utility that opens big layered image files,
 **layered TIFF**, **PSD** and **PSB**, and shows the **layer structure**:
 the tree of folders, pixel layers, shapes, text, smart objects and adjustment
@@ -269,8 +275,16 @@ tree with every field above), which is handy for feeding other tools.
 | TIFF (standard embedded) | A normal `8BIM` `Layr` block in `37724`; layer metadata matches the PSD exactly. |
 | Flat TIFF / PSD | Detected; shown as one merged layer with a note. |
 
-**Bit depth** — for now ca-pa only reads **8-bit-per-channel** files; 16- and
-32-bit files are not supported yet.
+**Bit depth** — ca-pa reads **8-bit-per-channel** files in every supported
+format, and **16-bit-per-channel PSD and PSB** files (their framed layer
+records are decoded natively).  32-bit files are not supported yet.
+
+> **Known issue — 16-bit TIFF.**  Layered **TIFF** files that are
+> **16-bit-per-channel** do **not** currently read correctly: the classic
+> `37724`/`37725`/`37726` layer block and the byte-swapped / standard-embedded
+> variants all assume 8-bit samples, so a 16-bit layered TIFF can be mis-parsed
+> or fail.  **16-bit PSD and PSB files, by contrast, work correctly** — the
+> issue is specific to the TIFF readers.  8-bit TIFF is unaffected.
 
 ## Project layout
 
