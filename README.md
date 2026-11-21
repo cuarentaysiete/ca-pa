@@ -72,20 +72,23 @@ in-window Qt splash covers the wait instead).
 
 ### Exporting the structure as JSON
 
-Two toolbar buttons write the parsed metadata (no pixels) to disk:
+Two toolbar buttons write the parsed metadata (no pixels) to disk; they sit **first** on the toolbar, with the *Close* / *Close all* buttons to their right:
 
 * **Export JSON** — saves the *selected* file's full structure to a `.json`
   you choose (canvas metadata + the whole layer tree, via
-  `DocumentInfo.to_dict()`).
+  `DocumentInfo.to_dict()`).  The dialog opens in the file's own directory by
+  default.
 * **Export all JSON** — saves *every* open file as one JSON array, each entry
-  keyed by `file` and carrying that document's full `to_dict()`.
+  keyed by `file` and carrying that document's full `to_dict()`.  The dialog
+  opens in the selected file's directory by default.
 
 ### Where the file lives
 
 Below the file list, a **directory tree** shows the filesystem path of the
-selected file — the chain of folders from the volume root down to the file's
-own directory, with the file highlighted as the leaf. It refreshes whenever
-you pick another file in the sidebar.
+selected file — a chain of folders from the volume root down to the file's
+own directory, **each row showing only that level's name** (not the full
+path repeated at every depth), with the file highlighted as the leaf.  It
+refreshes whenever you pick another file in the sidebar.
 
 ## How it works
 

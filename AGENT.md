@@ -174,17 +174,26 @@ otherwise behaves exactly as before:
   `DocumentInfo.to_dict()` to a `.json`) and *Export all JSON* (one array
   with every loaded document, each keyed by `file`).  Both use
   `QFileDialog.getSaveFileName`; a no-op with a status message when there is
-  nothing loaded.
+  nothing loaded.  **The export buttons sit first on the toolbar** (export,
+  then a separator, then *Close* / *Close all* to the right).  The save
+  dialog opens in the file's own directory by default (for *Export all*, in
+  the selected file's directory, or the first loaded file's when nothing is
+  selected).
 * **Directory tree of the selected file.** The left column now carries, under
   the file list, a `QTreeWidget` (`window.dir_tree`) in a vertical splitter.
   It renders the filesystem chain from the volume root down to the file's own
-  directory and highlights the file as the selected leaf.  `_update_dir_tree()`
-  rebuilds it from the sidebar selection inside `_show_current()`, so it
-  follows the user as they switch files.  Keep `window.sidebar` a plain
-  `QListWidget`: the tests count its rows.
+  directory and highlights the file as the selected leaf.  **Each row shows
+  only that level's name** (not the full path repeated at every depth).
+  `_update_dir_tree()` rebuilds it from the sidebar selection inside
+  `_show_current()`, so it follows the user as they switch files.  Keep
+  `window.sidebar` a plain `QListWidget`: the tests count its rows.
 
-Both are exercised by `tests/test_gui.py` (six new tests).  No reader
-changes; low-memory behaviour is unchanged.
+Both are exercised by `tests/test_gui.py` (eight tests: the toolbar actions
+exist and are in the right order; the tree is present, empty when nothing is
+loaded, populates for a loaded file with the file selected, and uses short
+names rather than repeated full paths; single and all-JSON export write valid
+JSON; exporting with nothing loaded is a no-op).  No reader changes;
+low-memory behaviour is unchanged.
 
 ## Release process
 

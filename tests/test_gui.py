@@ -327,3 +327,53 @@ def test_export_nothing_loaded_is_noop(qapp, samples, tmp_path):
     assert not os.path.exists(out)  # neither wrote anything
     assert "No loaded file" in window.statusBar().currentMessage() or "No loaded files" in window.statusBar().currentMessage()
     window.close()
+
+
+def test_toolbar_order_export_first_then_close(qapp, samples):
+    """The toolbar reads: Export JSON, Export all JSON, |, Close, Close all."""
+    from PySide6.QtWidgets import QToolBar
+
+    window = MainWindow()
+    toolbar = window.findChild(QToolBar)
+    labels = [a.text() for a in toolbar.actions() if a.text()]
+    # export actions come first, close actions to the right
+    assert labels.index("Export JSON") < labels.index("Export all JSON")
+    assert labels.index("Export all JSON") < labels.index("Close")
+    assert labels.index("Close") < labels.index("Close all")
+    window.close()
+
+
+def test_dir_tree_uses_short_names_not_full_paths(qapp, samples):
+    """Each directory row shows only that level's name, not the repeated path."""
+    window = MainWindow()
+    _load_sync(window, samples["sample.psd"])
+    root = window.dir_tree.invisibleRootItem()
+
+    def first_chain(item):
+        """Follow the first child down to a leaf, collecting the texts."""
+        out = []
+        cur = item
+        while True:
+            for i in range(cur.childCount()):
+                c = cur.child(i)
+                out.append(c.text(0))
+                cur = c
+                break
+            else:
+                return out
+
+    chain = first_chain(root)
+    # The last entry is the file's own name.
+    assert chain[-1] == os.path.basename(samples["sample.psd"])
+    # No intermediate directory row should contain a full path (no slashes
+    # other than the POSIX volume root, and no drive-letter prefix on
+    # Windows).  Each folder row is a single short component.
+    for name in chain[:-1]:
+        # A bare component: no internal os.sep (the POSIX root is just "/").
+        if os.name != "nt":
+            assert name.count(os.sep) <= 1, name
+        else:
+            # On Windows a row is either a drive root ("C:\") or a folder
+            # name without a backslash.
+            assert name.count("\\") <= 1, name
+    window.close()

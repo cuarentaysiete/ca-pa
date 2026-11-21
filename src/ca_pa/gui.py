@@ -317,20 +317,9 @@ class MainWindow(QMainWindow):
         self._tasks: list[ParseTask] = []
         self._results: list[_ParseResult] = []  # kept alive for queued signals
 
-        # Toolbar: close the selected file, or every open file.
+        # Toolbar: export first, then the close actions (rightmost).
         toolbar = self.addToolBar("File")
         toolbar.setMovable(False)
-        self._close_action = toolbar.addAction("Close")
-        self._close_action.setToolTip("Close the selected file (Del)")
-        self._close_action.triggered.connect(
-            lambda _checked=False: self.close_current()
-        )
-        self._close_all_action = toolbar.addAction("Close all")
-        self._close_all_action.setToolTip("Close every open file")
-        self._close_all_action.triggered.connect(
-            lambda _checked=False: self.close_all()
-        )
-        toolbar.addSeparator()
         self._export_json_action = toolbar.addAction("Export JSON")
         self._export_json_action.setToolTip(
             "Export the layer structure of the selected file as JSON"
@@ -344,6 +333,17 @@ class MainWindow(QMainWindow):
         )
         self._export_all_json_action.triggered.connect(
             lambda _checked=False: self._export_all_json()
+        )
+        toolbar.addSeparator()
+        self._close_action = toolbar.addAction("Close")
+        self._close_action.setToolTip("Close the selected file (Del)")
+        self._close_action.triggered.connect(
+            lambda _checked=False: self.close_current()
+        )
+        self._close_all_action = toolbar.addAction("Close all")
+        self._close_all_action.setToolTip("Close every open file")
+        self._close_all_action.triggered.connect(
+            lambda _checked=False: self.close_all()
         )
 
         self.sidebar = QListWidget()
@@ -573,10 +573,19 @@ class MainWindow(QMainWindow):
             {"file": d.path, **d.to_dict()}
             for d in docs
         ]
+        # Default save location: the directory of the selected file, or of
+        # the first loaded file when nothing is selected.
+        current = self.sidebar.currentItem()
+        cur_path = current.data(Qt.ItemDataRole.UserRole) if current else None
+        if cur_path and os.path.isdir(os.path.dirname(cur_path)):
+            base_dir = os.path.dirname(cur_path)
+        else:
+            base_dir = os.path.dirname(docs[0].path)
+        default = os.path.join(base_dir, "ca-pa-export.json")
         target, _ = QFileDialog.getSaveFileName(
             self,
             "Export all open files as JSON",
-            os.path.join(os.path.expanduser("~"), "ca-pa-export.json"),
+            default,
             "JSON files (*.json)",
         )
         if not target:
@@ -591,28 +600,41 @@ class MainWindow(QMainWindow):
     # -- directory tree ------------------------------------------------------
 
     def _update_dir_tree(self) -> None:
-        """Show the filesystem path of the selected file in ``dir_tree``."""
+        """Show the filesystem path of the selected file in ``dir_tree``.
+
+        Each row shows only the *name* of that directory level (not the full
+        path repeated at every depth), so the tree reads top-to-bottom like a
+        normal file browser: volume root, then each folder by its own name,
+        ending with the file itself.
+        """
         self.dir_tree.clear()
         current = self.sidebar.currentItem()
         path = current.data(Qt.ItemDataRole.UserRole) if current else None
         if not path:
             return
-        # Build the chain of QTreeWidgetItems from the volume root down to the
-        # file's directory, then highlight the file itself as a leaf.
         full = os.path.abspath(path)
         directory = os.path.dirname(full) or os.sep
-        chain = []
+        # Collect the chain of directory *names* (volume root first), from the
+        # filesystem root down to the file's own directory.
+        names = []
         cur = directory
         while True:
-            chain.append(cur)
+            names.append(os.path.basename(cur) or cur)  # basename of "/" is ""
             parent = os.path.dirname(cur)
             if parent == cur:
+                # Reached the volume root; give it a display name.
+                names[-1] = cur if len(cur) > 1 else cur or os.sep
                 break
             cur = parent
-        chain.reverse()
+        names.reverse()
+        # On POSIX the root is "/" and os.path.basename("/") == ""; show it
+        # as the volume root.  On Windows the root is like "C:\" and its
+        # basename is the drive.
+        if not names[0]:
+            names[0] = os.sep
         top = self.dir_tree.invisibleRootItem()
         prev: QTreeWidgetItem | None = None
-        for node in chain:
+        for node in names:
             item = QTreeWidgetItem([node])
             if prev is None:
                 top.addChild(item)
